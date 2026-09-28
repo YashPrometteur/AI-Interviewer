@@ -1,0 +1,53 @@
+# Environments & Secrets
+.env
+.env.local
+.env.*.local
+*.env
+backend/.env
+
+# Large Model Checkpoints & Weights
+*.pth
+*.pt
+*.onnx
+*.bin
+models/
+backend/models/
+backend/models/*
+
+# User Uploads & Media Artifacts
+uploads/
+backend/uploads/
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+.pytest_cache/
+*.db
+*.sqlite3
+
+# Node & Next.js
+node_modules/
+.next/
+out/
+build/
+dist/
+.npm
+*.tsbuildinfo
+
+# Logs & OS
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+
