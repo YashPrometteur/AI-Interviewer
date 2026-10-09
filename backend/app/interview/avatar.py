@@ -562,6 +562,51 @@ def render_lipsync_video(
     return mp4_bytes
 
 
+def render_gpu_avatar_video(
+    photo_path: str,
+    audio_path: str,
+    output_path: Optional[str] = None
+) -> bytes:
+    """Renders high-fidelity talking avatar MP4 video using an external GPU microservice (e.g. Google Colab T4 or remote GPU PC).
+    Sends photo image and TTS audio via multipart/form-data HTTP POST request and receives the rendered MP4.
+    """
+    gpu_url = (os.getenv("AVATAR_GPU_URL") or settings.AVATAR_GPU_URL or "").strip()
+    if not gpu_url:
+        raise ValueError("AVATAR_GPU_URL is not configured in backend/.env")
+
+    # If user provided base URL without /generate, append it
+    if not gpu_url.endswith("/generate") and not gpu_url.endswith("/render"):
+        gpu_url = gpu_url.rstrip("/") + "/generate"
+
+    logger.info(f"[GPU AVATAR] Sending photo and audio to remote GPU avatar server: {gpu_url}...")
+    start_t = time.perf_counter()
+
+    with open(photo_path, "rb") as pf, open(audio_path, "rb") as af:
+        files = {
+            "photo": ("photo.jpg", pf, "image/jpeg"),
+            "audio": ("audio.wav", af, "audio/wav")
+        }
+        # Allow up to 600s (10 min) for diffusion model inference & cold-start
+        res = requests.post(gpu_url, files=files, timeout=600)
+
+    if res.status_code != 200:
+        raise RuntimeError(f"GPU Avatar server returned HTTP {res.status_code}: {res.text[:300]}")
+
+    mp4_bytes = res.content
+    if len(mp4_bytes) < 1000:
+        raise RuntimeError(f"GPU Avatar server returned invalid/empty video ({len(mp4_bytes)} bytes)")
+
+    elapsed = time.perf_counter() - start_t
+    logger.info(f"[GPU AVATAR] Successfully received rendered MP4 video ({len(mp4_bytes)} bytes) in {elapsed:.2f}s from GPU server.")
+
+    if output_path:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "wb") as f:
+            f.write(mp4_bytes)
+
+    return mp4_bytes
+
+
 def render_did_video(
     photo_path: str,
     text: str,

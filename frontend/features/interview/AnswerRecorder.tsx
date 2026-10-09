@@ -7,6 +7,7 @@ import { api } from '../../lib/api';
 interface AnswerRecorderProps {
   sessionId: string;
   activeQuestionId: string;
+  questionText?: string;
   questionDifficulty?: 'easy' | 'medium' | 'hard' | string;
   questionNumber: number;
   totalQuestions: number;
@@ -20,7 +21,78 @@ interface AnswerRecorderProps {
 }
 
 /**
- * Difficulty duration mapping requested by user:
+ * 4-Pillar Adaptive Linguistic & Silence Analyzer
+ * Computes dynamic silence thresholds based on spoken syntax, explicit conclusion cues, and question depth.
+ */
+export interface AdaptiveSilenceConfig {
+  pattern: 'explicit_conclusion' | 'standard_complete' | 'dangling_conjunction' | 'empty';
+  silenceWindowMs: number;
+  reason: string;
+}
+
+export const analyzeSpokenThought = (
+  transcript: string,
+  questionText?: string
+): AdaptiveSilenceConfig => {
+  const clean = transcript.trim();
+  if (!clean || clean.length < 3) {
+    return {
+      pattern: 'empty',
+      silenceWindowMs: 12000,
+      reason: 'Awaiting candidate spoken response',
+    };
+  }
+
+  // Pillar 1: Explicit Conclusion Cues (2.0s quick response)
+  const conclusionRegex = /\b(that'?s (all|it|everything|basically it|my answer|pretty much it)|i'?m done|that covers it|i don'?t know|i don'?t remember|nothing (more|else) to add|pass|skip|that wraps (it|things) up|that is all|that's about it)\b[\s\.\?!]*$/i;
+  if (conclusionRegex.test(clean)) {
+    return {
+      pattern: 'explicit_conclusion',
+      silenceWindowMs: 2000,
+      reason: 'Explicit conclusion marker detected',
+    };
+  }
+
+  // Pillar 1: Dangling Conjunctions & Filler Continuations (6.5s patient thinking buffer)
+  const danglingRegex = /\b(and|because|also|so if|for example|for instance|in addition|furthermore|like|such as|whereas|while|meaning that|which is|then|or|but|plus|on top of that)\s*[\.,]*$/i;
+  if (danglingRegex.test(clean)) {
+    return {
+      pattern: 'dangling_conjunction',
+      silenceWindowMs: 6500,
+      reason: 'Dangling conjunction or mid-sentence formulation',
+    };
+  }
+
+  // Pillar 2: Multi-Part Question Depth Tracking (adds +2.0s buffer if response is brief)
+  const wordCount = clean.split(/\s+/).filter(Boolean).length;
+  const isMultiPartQuestion = Boolean(
+    questionText &&
+    (questionText.includes(' and ') ||
+      questionText.includes('compare') ||
+      questionText.includes('difference') ||
+      questionText.includes('how does') ||
+      questionText.includes('why is') ||
+      questionText.includes('explain'))
+  );
+
+  if (isMultiPartQuestion && wordCount < 18) {
+    return {
+      pattern: 'standard_complete',
+      silenceWindowMs: 6500,
+      reason: 'Multi-part question requiring candidate elaboration time',
+    };
+  }
+
+  // Pillar 1: Standard Complete Thought (4.5s relaxed thinking buffer)
+  return {
+    pattern: 'standard_complete',
+    silenceWindowMs: 4500,
+    reason: 'Complete sentence formulation',
+  };
+};
+
+/**
+ * Difficulty duration mapping:
  * - Easy: 2 minutes (120s)
  * - Medium: 3 minutes (180s)
  * - Hard: 5 minutes (300s)
@@ -42,6 +114,7 @@ export const getDurationForDifficulty = (difficulty?: string): number => {
 export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
   sessionId,
   activeQuestionId,
+  questionText,
   questionDifficulty = 'easy',
   questionNumber,
   totalQuestions,
@@ -57,16 +130,21 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [sessionStatus, setSessionStatus] = useState<'ready' | 'recording' | 'finalizing'>('ready');
   const [faceStatus, setFaceStatus] = useState<'detecting' | 'ok' | 'no_face' | 'multiple_faces'>('detecting');
+  const [phoneDetected, setPhoneDetected] = useState<boolean>(false);
   const [audioLevel, setAudioLevel] = useState<number>(0);
+
+  // 4-Pillar Adaptive Auto-Submission State
+  const [autoSubmitCountdown, setAutoSubmitCountdown] = useState<number | null>(null);
+  const [spokenInsight, setSpokenInsight] = useState<string | null>(null);
 
   // Timers: per-question countdown + total session elapsed
   const duration = getDurationForDifficulty(questionDifficulty);
   const [questionRemainingSeconds, setQuestionRemainingSeconds] = useState<number>(duration);
   const [questionTotalSeconds, setQuestionTotalSeconds] = useState<number>(duration);
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState<number>(0);
+  const [thinkTimeRemaining, setThinkTimeRemaining] = useState<number | null>(30);
 
   const [permissionError, setPermissionError] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // References to keep media continuous across question transitions
@@ -90,6 +168,14 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
   const audioIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const silenceCounterRef = useRef<number>(0);
   const isTransitioningRef = useRef<boolean>(false);
+
+  // Adaptive Silence & Live Transcription Refs
+  const continuousSilenceMsRef = useRef<number>(0);
+  const liveTranscriptRef = useRef<string>('');
+  const autoSubmitIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const speechRecognitionRef = useRef<any>(null);
+  const questionTextRef = useRef(questionText);
+  useEffect(() => { questionTextRef.current = questionText; }, [questionText]);
 
   // Synchronized refs to avoid re-creating callbacks and triggering effect teardowns
   const sessionIdRef = useRef(sessionId);
@@ -167,31 +253,35 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
               const res = await api.uploadProctoringFrame(currentSessionId, blob, currentQId);
               if (res && res.success) {
                 if (res.event_logged === 'cell_phone_detected' || res.phone_detected) {
+                  setPhoneDetected(true);
                   onWarningRef.current?.({
-                    title: '🚨 Malpractice Warning: Mobile Phone Detected!',
-                    message: 'Unauthorized mobile device/phone detected in camera frame. Electronic devices are strictly prohibited during the interview.',
+                    title: '🚨 Mobile Phone Detected',
+                    message: 'Mobile device detected in camera frame. Electronic devices are not permitted during the interview.',
                     severity: 'high',
-                  });
-                } else if (res.event_logged === 'multiple_faces_detected' || (res.person_count && res.person_count > 1) || (res.face_count && res.face_count > 1)) {
-                  setFaceStatus('multiple_faces');
-                  onWarningRef.current?.({
-                    title: '🚨 Malpractice Warning: Multiple Faces Detected!',
-                    message: `Multiple individuals (${res.person_count || 2}) detected in camera view. External presence is strictly prohibited.`,
-                    severity: 'high',
-                  });
-                } else if (res.event_logged === 'no_face_detected' || res.person_count === 0 || res.face_count === 0) {
-                  setFaceStatus('no_face');
-                  onWarningRef.current?.({
-                    title: '⚠️ Face Out of Frame!',
-                    message: 'No candidate face detected in the camera frame. Please center yourself directly in front of the camera.',
-                    severity: 'medium',
                   });
                 } else {
-                  setFaceStatus('ok');
+                  setPhoneDetected(false);
+                  if (res.event_logged === 'multiple_faces_detected' || (res.person_count && res.person_count > 1) || (res.face_count && res.face_count > 1)) {
+                    setFaceStatus('multiple_faces');
+                    onWarningRef.current?.({
+                      title: '🚨 Multiple Faces Detected',
+                      message: `Multiple individuals (${res.person_count || 2}) detected in camera view.`,
+                      severity: 'high',
+                    });
+                  } else if (res.event_logged === 'no_face_detected' || res.person_count === 0 || res.face_count === 0) {
+                    setFaceStatus('no_face');
+                    onWarningRef.current?.({
+                      title: '⚠️ Face Out of Frame',
+                      message: 'Please keep your face centered in the camera view.',
+                      severity: 'medium',
+                    });
+                  } else {
+                    setFaceStatus('ok');
+                  }
                 }
               }
             } catch (err) {
-              console.warn('[Proctoring] Periodic frame sampling upload skipped:', err);
+              console.warn('[Proctoring] Periodic frame sampling skipped:', err);
             }
           }
         },
@@ -203,7 +293,98 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
     }
   }, []);
 
-  // Audio Telemetry (detects voice activity level & prolonged silence)
+  // Cancel any active auto-submission countdown
+  const cancelAutoSubmit = useCallback(() => {
+    if (autoSubmitIntervalRef.current) {
+      clearInterval(autoSubmitIntervalRef.current);
+      autoSubmitIntervalRef.current = null;
+    }
+    setAutoSubmitCountdown(null);
+    continuousSilenceMsRef.current = 0;
+  }, []);
+
+  // Soft-landing countdown runner (4 seconds countdown before auto-submitting)
+  const startAutoSubmitCountdown = useCallback(() => {
+    if (autoSubmitIntervalRef.current || isTransitioningRef.current) return;
+    let remaining = 4;
+    setAutoSubmitCountdown(remaining);
+
+    autoSubmitIntervalRef.current = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        if (autoSubmitIntervalRef.current) {
+          clearInterval(autoSubmitIntervalRef.current);
+          autoSubmitIntervalRef.current = null;
+        }
+        setAutoSubmitCountdown(null);
+        if (!isTransitioningRef.current) {
+          triggerQuestionTransitionRef.current();
+        }
+      } else {
+        setAutoSubmitCountdown(remaining);
+      }
+    }, 1000);
+  }, []);
+
+  // Initialize live Web Speech API recognition for real-time phrase analysis & silence resetting
+  const initLiveSpeechRecognition = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const SpeechRecognitionClass =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionClass) return;
+
+    try {
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch (e) {}
+      }
+
+      const recognition = new SpeechRecognitionClass();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event: any) => {
+        let fullTranscript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          fullTranscript += event.results[i][0].transcript + ' ';
+        }
+        liveTranscriptRef.current = fullTranscript.trim();
+
+        // Spoken words detected -> Candidate is actively speaking, reset silence & cancel pill
+        continuousSilenceMsRef.current = 0;
+        cancelAutoSubmit();
+
+        // Analyze spoken pattern dynamically
+        const analysis = analyzeSpokenThought(liveTranscriptRef.current, questionTextRef.current);
+        setSpokenInsight(analysis.reason);
+      };
+
+      recognition.onerror = (event: any) => {
+        if (event.error !== 'no-speech') {
+          console.warn('[AnswerRecorder] Live speech recognition warning:', event.error);
+        }
+      };
+
+      recognition.onend = () => {
+        if (sessionStatus === 'recording' && !isTransitioningRef.current) {
+          try {
+            recognition.start();
+          } catch (e) {
+            // Already active
+          }
+        }
+      };
+
+      recognition.start();
+      speechRecognitionRef.current = recognition;
+    } catch (err) {
+      console.warn('[AnswerRecorder] Web Speech Recognition init skipped:', err);
+    }
+  }, [cancelAutoSubmit, sessionStatus]);
+
+  // Audio Telemetry (detects voice activity level, sub-vocal fillers & runs adaptive silence checks)
   const setupAudioTelemetry = useCallback((mediaStream: MediaStream) => {
     try {
       const audioTracks = mediaStream.getAudioTracks();
@@ -221,7 +402,9 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       silenceCounterRef.current = 0;
+      continuousSilenceMsRef.current = 0;
 
+      // High-frequency 200ms tick for responsive VAD and filler detection
       audioIntervalRef.current = setInterval(async () => {
         analyser.getByteFrequencyData(dataArray);
         let sum = 0;
@@ -231,10 +414,19 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
         const average = sum / dataArray.length;
         setAudioLevel(Math.min(100, Math.round((average / 128) * 100)));
 
-        if (average < 2.0) {
+        // Pillar 3: Sub-Vocal / Filler Awareness ("Umm...", "Uh...", breath shifts)
+        // Average >= 3.0 indicates candidate vocalization
+        if (average >= 3.0) {
+          continuousSilenceMsRef.current = 0;
+          silenceCounterRef.current = 0;
+          cancelAutoSubmit();
+        } else {
+          // Candidate in silence -> Increment silence counters
           silenceCounterRef.current += 1;
-          // Log suspicious silence if candidate remains silent > 20s
-          if (silenceCounterRef.current === 20 && sessionIdRef.current) {
+          continuousSilenceMsRef.current += 200;
+
+          // Proctoring check for suspicious silence (>15 seconds without speaking)
+          if (silenceCounterRef.current === 75 && sessionIdRef.current) {
             try {
               await api.logProctoringEvent(sessionIdRef.current, {
                 event_type: 'suspicious_silence',
@@ -245,76 +437,31 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
               console.warn('[Proctoring] Silence telemetry failed:', e);
             }
           }
-        } else {
-          silenceCounterRef.current = 0;
+
+          // Pillar 1 & 2: Dynamic Auto-Submission Evaluation
+          // Only evaluate when candidate has formulated a spoken answer
+          if (
+            liveTranscriptRef.current.trim().length > 0 &&
+            !isTransitioningRef.current
+          ) {
+            const analysis = analyzeSpokenThought(liveTranscriptRef.current, questionTextRef.current);
+            if (continuousSilenceMsRef.current >= analysis.silenceWindowMs) {
+              startAutoSubmitCountdown();
+            }
+          }
         }
-      }, 500);
+      }, 200);
     } catch (e) {
       console.warn('[AnswerRecorder] Web Audio setup skipped:', e);
     }
-  }, []);
-
-  // Initialize camera and microphone stream ONCE (continuous live stream)
-  const initMediaStream = useCallback(async () => {
-    try {
-      setPermissionError(null);
-      setErrorMessage(null);
-
-      let userMedia: MediaStream;
-      try {
-        userMedia = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
-          audio: { echoCancellation: true, noiseSuppression: true },
-        });
-      } catch (firstErr) {
-        console.warn('[AnswerRecorder] HD constraints failed, falling back to basic stream:', firstErr);
-        userMedia = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
-      }
-
-      streamRef.current = userMedia;
-      setStream(userMedia);
-      attachStreamToVideo(userMedia);
-      setupAudioTelemetry(userMedia);
-
-      // Periodic vision proctoring frame sampling every 6s
-      if (frameSamplingIntervalRef.current) clearInterval(frameSamplingIntervalRef.current);
-      setTimeout(() => sampleFrame(), 1500);
-      frameSamplingIntervalRef.current = setInterval(() => {
-        sampleFrame();
-      }, 6000);
-
-    } catch (err: any) {
-      console.error('[AnswerRecorder] Camera/Mic error:', err);
-      setPermissionError(
-        'Unable to access camera and microphone. Please ensure permissions are granted and no other application is locking your camera.'
-      );
-    }
-  }, [attachStreamToVideo, sampleFrame, setupAudioTelemetry]);
-
-  // Cleanup strictly on component unmount
-  useEffect(() => {
-    initMediaStream();
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-      }
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      if (frameSamplingIntervalRef.current) clearInterval(frameSamplingIntervalRef.current);
-      if (audioIntervalRef.current) clearInterval(audioIntervalRef.current);
-      if (audioContextRef.current) {
-        audioContextRef.current.close().catch(() => {});
-      }
-    };
-  }, [initMediaStream]);
+  }, [cancelAutoSubmit, startAutoSubmitCountdown]);
 
   // Start question-wise audio slice recorder on the continuous stream
-  const startQuestionAudioRecorder = useCallback((qId: string) => {
-    if (!streamRef.current) return;
+  const startQuestionAudioRecorder = useCallback((qId: string, customStream?: MediaStream) => {
+    const activeStream = customStream || streamRef.current;
+    if (!activeStream) return;
     try {
-      const audioTracks = streamRef.current.getAudioTracks();
+      const audioTracks = activeStream.getAudioTracks();
       if (audioTracks.length === 0) return;
       const audioStream = new MediaStream(audioTracks);
 
@@ -348,9 +495,116 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
     }
   }, []);
 
+  // Start continuous recording immediately when stream is ready
+  const startContinuousSession = useCallback((activeStream: MediaStream) => {
+    try {
+      const mimeType = getSupportedMimeType();
+      const options = mimeType ? { mimeType } : undefined;
+
+      // 1. Master continuous session recording
+      masterChunksRef.current = [];
+      const masterRecorder = new MediaRecorder(activeStream, options);
+      masterRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          masterChunksRef.current.push(e.data);
+        }
+      };
+      masterRecorder.start(1000);
+      masterRecorderRef.current = masterRecorder;
+
+      // 2. Question audio slice recorder
+      startQuestionAudioRecorder(activeQuestionIdRef.current, activeStream);
+
+      // 3. Timers & Live Speech Recognition
+      const initialDur = getDurationForDifficulty(questionDifficulty);
+      setQuestionTotalSeconds(initialDur);
+      setQuestionRemainingSeconds(initialDur);
+      setThinkTimeRemaining(30);
+      setSessionElapsedSeconds(0);
+      isTransitioningRef.current = false;
+      setSessionStatus('recording');
+
+      // Initialize live speech analyzer
+      initLiveSpeechRecognition();
+    } catch (err: any) {
+      console.error('[AnswerRecorder] Error starting recording:', err);
+    }
+  }, [initLiveSpeechRecognition, questionDifficulty, startQuestionAudioRecorder]);
+
+  // Initialize camera and microphone stream ONCE
+  const initMediaStream = useCallback(async () => {
+    try {
+      setPermissionError(null);
+      setErrorMessage(null);
+
+      let userMedia: MediaStream;
+      try {
+        userMedia = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+      } catch (firstErr) {
+        console.warn('[AnswerRecorder] HD constraints failed, falling back to basic stream:', firstErr);
+        userMedia = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+      }
+
+      streamRef.current = userMedia;
+      setStream(userMedia);
+      attachStreamToVideo(userMedia);
+      setupAudioTelemetry(userMedia);
+
+      // Auto-start recording immediately
+      startContinuousSession(userMedia);
+
+      // Periodic vision proctoring frame sampling every 3s
+      if (frameSamplingIntervalRef.current) clearInterval(frameSamplingIntervalRef.current);
+      setTimeout(() => sampleFrame(), 1000);
+      frameSamplingIntervalRef.current = setInterval(() => {
+        sampleFrame();
+      }, 3000);
+
+    } catch (err: any) {
+      console.error('[AnswerRecorder] Camera/Mic error:', err);
+      setPermissionError(
+        'Unable to access camera and microphone. Please ensure permissions are granted and no other application is locking your camera.'
+      );
+    }
+  }, [attachStreamToVideo, sampleFrame, setupAudioTelemetry, startContinuousSession]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    initMediaStream();
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      if (frameSamplingIntervalRef.current) clearInterval(frameSamplingIntervalRef.current);
+      if (audioIntervalRef.current) clearInterval(audioIntervalRef.current);
+      if (autoSubmitIntervalRef.current) clearInterval(autoSubmitIntervalRef.current);
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch (e) {}
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {});
+      }
+    };
+  }, [initMediaStream]);
+
   // Finalize master session video and complete interview
   const triggerFinishSession = useCallback(async (sessionExpired: boolean) => {
     setSessionStatus('finalizing');
+    cancelAutoSubmit();
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.stop();
+      } catch (e) {}
+    }
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
@@ -364,11 +618,6 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
       audioIntervalRef.current = null;
     }
 
-    setStatusMessage(sessionExpired
-      ? '10-minute session duration reached! Finalizing interview and saving complete video...'
-      : 'All questions completed! Finalizing interview and saving complete video...'
-    );
-
     const masterRecorder = masterRecorderRef.current;
     const finishMaster = async () => {
       const mimeType = getSupportedMimeType();
@@ -376,7 +625,7 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
       try {
         await onFinishMasterSessionRef.current(masterBlob);
       } catch (err: any) {
-        setErrorMessage(err.message || 'Error saving complete session video.');
+        setErrorMessage(err.message || 'Error saving session recording.');
       }
     };
 
@@ -388,7 +637,7 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
     } else {
       await finishMaster();
     }
-  }, []);
+  }, [cancelAutoSubmit]);
 
   const triggerFinishSessionRef = useRef(triggerFinishSession);
   useEffect(() => {
@@ -399,31 +648,25 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
   const triggerQuestionTransition = useCallback(async () => {
     if (isTransitioningRef.current) return;
     isTransitioningRef.current = true;
+    cancelAutoSubmit();
 
     const qIdToSubmit = currentRecordingQIdRef.current;
     const qRecorder = questionRecorderRef.current;
 
-    setStatusMessage(`Submitting Question ${questionNumberRef.current} answer & loading next...`);
-
-    // Helper to package audio slice chunks into an audio Blob for Whisper
     const finishChunkAndSubmit = async () => {
       const chunkBlob = new Blob(questionChunksRef.current, { type: 'audio/webm' });
       questionChunksRef.current = [];
 
       try {
-        // Dispatch background submission for this question's audio/video
         await onSubmitQuestionAnswerRef.current(chunkBlob, qIdToSubmit);
       } catch (err) {
         console.error(`[AnswerRecorder] Answer submission error for question ${qIdToSubmit}:`, err);
       }
 
       if (isLastQuestionRef.current) {
-        // This was the final question: finalize master recording and complete session
         await triggerFinishSessionRef.current(false);
       } else {
-        // Advance to next question
         await onAdvanceQuestionRef.current();
-        // isTransitioningRef will be reset when the new activeQuestionId arrives
       }
     };
 
@@ -435,29 +678,39 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
     } else {
       await finishChunkAndSubmit();
     }
-  }, []);
+  }, [cancelAutoSubmit]);
 
   const triggerQuestionTransitionRef = useRef(triggerQuestionTransition);
   useEffect(() => {
     triggerQuestionTransitionRef.current = triggerQuestionTransition;
   }, [triggerQuestionTransition]);
 
-  // Dedicated active session timer: ticks session elapsed and question countdown continuously
+  // Active session timer
   useEffect(() => {
     if (sessionStatus !== 'recording') return;
 
     const interval = setInterval(() => {
-      // 1. Session total elapsed seconds (capped at 600s = 10 mins)
+      // 1. Session total elapsed seconds
       setSessionElapsedSeconds((prev) => {
-        const nextSessionSec = prev + 1;
-        if (nextSessionSec >= 600) {
+        const nextSec = prev + 1;
+        if (nextSec >= 600) {
           triggerFinishSessionRef.current(true);
         }
-        return nextSessionSec;
+        return nextSec;
       });
 
-      // 2. Per-question countdown
+      // 2. Think Time Countdown
+      setThinkTimeRemaining((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) return null;
+        return prev - 1;
+      });
+
+      // 3. Per-question countdown (runs after think time)
       setQuestionRemainingSeconds((prev) => {
+        if (thinkTimeRemaining !== null && thinkTimeRemaining > 0) {
+          return prev;
+        }
         if (prev <= 1) {
           if (!isTransitioningRef.current) {
             triggerQuestionTransitionRef.current();
@@ -469,67 +722,35 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
     }, 1000);
 
     timerIntervalRef.current = interval;
-
     return () => {
       clearInterval(interval);
       if (timerIntervalRef.current === interval) {
         timerIntervalRef.current = null;
       }
     };
-  }, [sessionStatus]);
+  }, [sessionStatus, thinkTimeRemaining]);
 
-  // Handler to start the full 10-minute continuous session recording
-  const handleStartInterviewSession = () => {
-    if (!streamRef.current) {
-      setErrorMessage('Camera & microphone stream not ready.');
-      return;
-    }
-
-    try {
-      const mimeType = getSupportedMimeType();
-      const options = mimeType ? { mimeType } : undefined;
-
-      // 1. Start Continuous Master Session Recorder (records uninterrupted 10-minute video)
-      masterChunksRef.current = [];
-      const masterRecorder = new MediaRecorder(streamRef.current, options);
-      masterRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          masterChunksRef.current.push(e.data);
-        }
-      };
-      masterRecorder.start(1000);
-      masterRecorderRef.current = masterRecorder;
-
-      // 2. Start Question 1 Audio Slice Recorder (captures speech for Q1 transcript)
-      startQuestionAudioRecorder(activeQuestionId);
-
-      // 3. Reset per-question countdown and total elapsed timer
-      const initialDur = getDurationForDifficulty(questionDifficulty);
-      setQuestionTotalSeconds(initialDur);
-      setQuestionRemainingSeconds(initialDur);
-      setSessionElapsedSeconds(0);
-      isTransitioningRef.current = false;
-      setSessionStatus('recording');
-      setStatusMessage(`Question 1 started (${initialDur / 60}m limit). Speak your answer clearly.`);
-    } catch (err: any) {
-      setErrorMessage(`Failed to start session recording: ${err.message}`);
-    }
+  // Skip think time and start answering immediately
+  const handleSkipThinkTime = () => {
+    setThinkTimeRemaining(null);
   };
 
-  // Watch for question changes: when a new question arrives, seamlessly start its chunk recorder and reset question timer
+  // Watch for question changes
   useEffect(() => {
     if (sessionStatus === 'recording' && activeQuestionId && activeQuestionId !== currentRecordingQIdRef.current) {
       currentRecordingQIdRef.current = activeQuestionId;
       const newDur = getDurationForDifficulty(questionDifficulty);
       setQuestionTotalSeconds(newDur);
       setQuestionRemainingSeconds(newDur);
+      setThinkTimeRemaining(30);
       isTransitioningRef.current = false;
-
-      // Start new question audio slice recorder immediately on the continuous audio track
+      cancelAutoSubmit();
+      liveTranscriptRef.current = '';
+      continuousSilenceMsRef.current = 0;
+      setSpokenInsight(null);
       startQuestionAudioRecorder(activeQuestionId);
-      setStatusMessage(`Question ${questionNumber} active (${newDur / 60}m timer). Camera continuous.`);
     }
-  }, [activeQuestionId, questionDifficulty, questionNumber, sessionStatus, startQuestionAudioRecorder]);
+  }, [activeQuestionId, cancelAutoSubmit, questionDifficulty, questionNumber, sessionStatus, startQuestionAudioRecorder]);
 
   // Format time utility: MM:SS
   const formatTimer = (seconds: number) => {
@@ -538,59 +759,34 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Calculate percentage of time remaining for dynamic progress bar
+  // Dynamic progress bar percentage
   const progressPercent = Math.max(0, Math.min(100, (questionRemainingSeconds / (questionTotalSeconds || 1)) * 100));
-
-  // Determine progress bar color based on urgency (<30s = red, <60s = amber, else emerald)
   const progressBarColor =
     questionRemainingSeconds <= 20
-      ? '#ef4444' // red
+      ? '#ef4444'
       : questionRemainingSeconds <= 45
-      ? '#f59e0b' // amber
-      : '#10b981'; // green
+      ? '#f59e0b'
+      : '#10b981';
 
   return (
-    <div style={{ marginTop: '1rem' }}>
-      {/* Status / Transition Banner */}
-      {statusMessage && (
-        <div style={{
-          marginBottom: '0.75rem',
-          padding: '0.6rem 1rem',
-          backgroundColor: '#f0fdf4',
-          border: '1px solid #bbf7d0',
-          color: '#166534',
-          borderRadius: '8px',
-          fontSize: '0.85rem',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          transition: 'all 0.3s ease',
-        }}>
-          <span>✨ {statusMessage}</span>
-          {sessionStatus === 'recording' && (
-            <span style={{ fontSize: '0.75rem', color: '#15803d', fontWeight: 600 }}>
-              Live Camera Continuous
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Main Continuous Video Stream Container */}
+    <div style={{ marginTop: '0.75rem' }}>
+      {/* Clean Candidate Camera Frame */}
       <div style={{
         position: 'relative',
         width: '100%',
         maxWidth: '720px',
         margin: '0 auto',
-        borderRadius: '14px',
+        borderRadius: '16px',
         overflow: 'hidden',
-        backgroundColor: '#0f172a',
-        boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
+        backgroundColor: '#020617',
+        boxShadow: '0 8px 24px -4px rgba(0, 0, 0, 0.25)',
+        border: '1px solid #1e293b',
         aspectRatio: '16/9',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
       }}>
-        {/* Continuous Mirrored Video Element */}
+        {/* Mirrored Video Stream */}
         <video
           ref={(el) => {
             videoPreviewRef.current = el;
@@ -606,11 +802,11 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
             width: '100%',
             height: '100%',
             objectFit: 'cover',
-            transform: 'scaleX(-1)', // Mirrored view
+            transform: 'scaleX(-1)',
           }}
         />
 
-        {/* Top-Left: Total Continuous 10-Min Session Indicator */}
+        {/* Minimal Non-Distracting Status Indicator (Top-Left) */}
         {sessionStatus === 'recording' && (
           <div style={{
             position: 'absolute',
@@ -619,59 +815,53 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
             display: 'flex',
             alignItems: 'center',
             gap: '0.5rem',
-            backgroundColor: 'rgba(15, 23, 42, 0.82)',
-            padding: '0.4rem 0.8rem',
-            borderRadius: '20px',
+            backgroundColor: 'rgba(15, 23, 42, 0.75)',
+            padding: '0.35rem 0.75rem',
+            borderRadius: '9999px',
             color: '#ffffff',
             fontSize: '0.8rem',
             fontWeight: 700,
-            backdropFilter: 'blur(6px)',
+            backdropFilter: 'blur(8px)',
             border: '1px solid rgba(255, 255, 255, 0.12)',
             zIndex: 10,
           }}>
             <span style={{
-              width: '10px',
-              height: '10px',
+              width: '8px',
+              height: '8px',
               borderRadius: '50%',
-              backgroundColor: '#ef4444',
+              backgroundColor: thinkTimeRemaining !== null && thinkTimeRemaining > 0 ? '#a78bfa' : '#ef4444',
               display: 'inline-block',
-              animation: 'pulse 1.2s infinite',
+              boxShadow: thinkTimeRemaining !== null && thinkTimeRemaining > 0 ? '0 0 6px #a78bfa' : '0 0 6px #ef4444',
             }} />
-            <span>SESSION: {formatTimer(sessionElapsedSeconds)} / 10:00</span>
+            {thinkTimeRemaining !== null && thinkTimeRemaining > 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span>💡 Think Time: {thinkTimeRemaining}s</span>
+                <button
+                  type="button"
+                  onClick={handleSkipThinkTime}
+                  style={{
+                    backgroundColor: '#4f46e5',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    fontSize: '0.7rem',
+                    padding: '0.15rem 0.55rem',
+                    borderRadius: '9999px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  Answer Now ➔
+                </button>
+              </div>
+            ) : (
+              <span>● REC Q{questionNumber} &bull; {formatTimer(questionRemainingSeconds)}</span>
+            )}
           </div>
         )}
 
-        {/* Top-Center: Per-Question Countdown Timer (2-5 min by difficulty) */}
-        {sessionStatus === 'recording' && (
-          <div style={{
-            position: 'absolute',
-            top: '0.85rem',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            backgroundColor: questionRemainingSeconds <= 20 ? 'rgba(185, 28, 28, 0.9)' : 'rgba(15, 23, 42, 0.85)',
-            padding: '0.35rem 1rem',
-            borderRadius: '20px',
-            color: '#ffffff',
-            backdropFilter: 'blur(6px)',
-            border: questionRemainingSeconds <= 20 ? '1px solid #ef4444' : '1px solid rgba(255, 255, 255, 0.15)',
-            zIndex: 10,
-            transition: 'background-color 0.3s ease',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 800, fontSize: '0.95rem' }}>
-              <span>⏳</span>
-              <span>{formatTimer(questionRemainingSeconds)} remaining</span>
-            </div>
-            <div style={{ fontSize: '0.65rem', opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Q{questionNumber} • {questionDifficulty} ({questionTotalSeconds / 60}m) • Auto-advances at 00:00
-            </div>
-          </div>
-        )}
-
-        {/* Top-Right: Proctoring Vision Face Status */}
-        {stream && (
+        {/* Alert Badge only on abnormal detections (Top-Right) */}
+        {(phoneDetected || faceStatus === 'multiple_faces' || faceStatus === 'no_face') && (
           <div style={{
             position: 'absolute',
             top: '0.85rem',
@@ -679,100 +869,80 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
             display: 'flex',
             alignItems: 'center',
             gap: '0.4rem',
-            backgroundColor:
-              faceStatus === 'multiple_faces'
-                ? 'rgba(220, 38, 38, 0.92)'
-                : faceStatus === 'no_face'
-                ? 'rgba(217, 119, 6, 0.92)'
-                : 'rgba(15, 23, 42, 0.82)',
+            backgroundColor: (phoneDetected || faceStatus === 'multiple_faces') ? 'rgba(220, 38, 38, 0.92)' : 'rgba(217, 119, 6, 0.92)',
             padding: '0.35rem 0.75rem',
-            borderRadius: '20px',
+            borderRadius: '9999px',
             color: '#ffffff',
             fontSize: '0.78rem',
             fontWeight: 700,
             backdropFilter: 'blur(6px)',
-            border:
-              faceStatus === 'multiple_faces'
-                ? '1px solid #ef4444'
-                : faceStatus === 'no_face'
-                ? '1px solid #f59e0b'
-                : '1px solid rgba(255, 255, 255, 0.15)',
+            border: (phoneDetected || faceStatus === 'multiple_faces') ? '1px solid #ef4444' : '1px solid #f59e0b',
             zIndex: 10,
           }}>
-            {faceStatus === 'multiple_faces' && <span>🚨 Multiple Faces</span>}
-            {faceStatus === 'no_face' && <span>⚠️ Face Out of Frame</span>}
-            {faceStatus === 'ok' && <span style={{ color: '#86efac' }}>🟢 Face Centered</span>}
-            {faceStatus === 'detecting' && <span>🛡️ Proctor Active</span>}
+            {phoneDetected && <span>🚨 Mobile Phone Detected</span>}
+            {!phoneDetected && faceStatus === 'multiple_faces' && <span>🚨 Multiple Faces</span>}
+            {!phoneDetected && faceStatus === 'no_face' && <span>⚠️ Face Out of Frame</span>}
           </div>
         )}
 
-        {/* Bottom-Left: Microphone Activity Equalizer Dot */}
-        {sessionStatus === 'recording' && (
-          <div style={{
-            position: 'absolute',
-            bottom: '0.85rem',
-            left: '0.85rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.4rem',
-            backgroundColor: 'rgba(15, 23, 42, 0.75)',
-            padding: '0.3rem 0.6rem',
-            borderRadius: '12px',
-            color: '#cbd5e1',
-            fontSize: '0.75rem',
-            zIndex: 10,
-          }}>
-            <span>🎙️</span>
-            <div style={{
-              width: '8px',
-              height: '8px',
-              borderRadius: '50%',
-              backgroundColor: audioLevel > 5 ? '#22c55e' : '#64748b',
-              transform: `scale(${1 + (audioLevel / 100) * 0.8})`,
-              transition: 'transform 0.1s ease',
-            }} />
-            <span>{audioLevel > 5 ? 'Speaking' : 'Mic active'}</span>
-          </div>
-        )}
-
-        {/* Pre-Interview Ready Overlay */}
-        {sessionStatus === 'ready' && !permissionError && (
-          <div style={{
-            position: 'absolute',
-            inset: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.75)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '2rem',
-            textAlign: 'center',
-            color: '#ffffff',
-            backdropFilter: 'blur(4px)',
-            zIndex: 20,
-          }}>
-            <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>📹</div>
-            <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.5rem' }}>
-              Camera & Microphone Connected
-            </h3>
-            <p style={{ fontSize: '0.875rem', color: '#cbd5e1', maxWidth: '460px', marginBottom: '1.5rem', lineHeight: 1.5 }}>
-              Your camera will remain on continuously for the entire interview (~10 mins).
-              Each question has a 2 to 5-minute timer based on difficulty and will auto-advance to the next question.
-            </p>
-            <Button
-              variant="primary"
-              onClick={handleStartInterviewSession}
+        {/* 4-Pillar Adaptive Soft-Landing Countdown Pill (Pillar 4) */}
+        {sessionStatus === 'recording' && autoSubmitCountdown !== null && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: '1.25rem',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.85rem',
+              backgroundColor: 'rgba(15, 23, 42, 0.92)',
+              backdropFilter: 'blur(16px)',
+              border: '1px solid rgba(245, 158, 11, 0.6)',
+              boxShadow: '0 12px 30px -4px rgba(0, 0, 0, 0.6), 0 0 20px rgba(245, 158, 11, 0.3)',
+              padding: '0.6rem 1.25rem',
+              borderRadius: '9999px',
+              color: '#ffffff',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              zIndex: 20,
+              maxWidth: '92%',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fef08a' }}>
+              <span style={{ fontSize: '1.1rem' }}>⏳</span>
+              <span>
+                Taking a pause? Auto-submitting in{' '}
+                <strong style={{ color: '#fbbf24', fontSize: '1.05rem', fontWeight: 800 }}>
+                  {autoSubmitCountdown}s
+                </strong>
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={cancelAutoSubmit}
               style={{
-                padding: '0.85rem 2.25rem',
-                fontSize: '1.05rem',
-                backgroundColor: '#dc2626',
-                borderColor: '#dc2626',
+                backgroundColor: '#3b82f6',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '9999px',
+                padding: '0.35rem 0.85rem',
+                fontSize: '0.78rem',
                 fontWeight: 700,
-                boxShadow: '0 4px 14px rgba(220, 38, 38, 0.4)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                transition: 'all 0.15s ease',
+                boxShadow: '0 2px 8px rgba(59, 130, 246, 0.4)',
               }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#2563eb')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#3b82f6')}
             >
-              🔴 Begin Interview (Start Question 1)
-            </Button>
+              <span>➕ Add More</span>
+              <span style={{ opacity: 0.8, fontSize: '0.7rem' }}>(or speak)</span>
+            </button>
           </div>
         )}
 
@@ -781,7 +951,7 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
           <div style={{
             position: 'absolute',
             inset: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.9)',
+            backgroundColor: 'rgba(15, 23, 42, 0.92)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -800,11 +970,11 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
               animation: 'spin 1s linear infinite',
               marginBottom: '1rem',
             }} />
-            <h4 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '0.5rem' }}>
-              Saving Full 10-Minute Video Recording...
+            <h4 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '0.35rem' }}>
+              Finalizing Interview...
             </h4>
-            <p style={{ fontSize: '0.85rem', color: '#94a3b8', maxWidth: '420px' }}>
-              Uploading continuous interview video, compiling question-wise transcripts, and generating evaluation report.
+            <p style={{ fontSize: '0.85rem', color: '#94a3b8', maxWidth: '380px', margin: 0 }}>
+              Saving continuous recording, processing transcripts, and compiling scorecard.
             </p>
           </div>
         )}
@@ -814,7 +984,7 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
           <div style={{
             position: 'absolute',
             inset: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.94)',
+            backgroundColor: 'rgba(15, 23, 42, 0.95)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -824,11 +994,11 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
             color: '#ffffff',
             zIndex: 25,
           }}>
-            <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>📹🚫</div>
+            <div style={{ fontSize: '2.2rem', marginBottom: '0.5rem' }}>📹🚫</div>
             <h4 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '0.5rem' }}>
               Camera & Microphone Access Required
             </h4>
-            <p style={{ fontSize: '0.85rem', color: '#94a3b8', maxWidth: '450px', marginBottom: '1.25rem', lineHeight: 1.4 }}>
+            <p style={{ fontSize: '0.85rem', color: '#94a3b8', maxWidth: '420px', marginBottom: '1.25rem', lineHeight: 1.4 }}>
               {permissionError}
             </p>
             <div style={{ display: 'flex', gap: '0.75rem' }}>
@@ -845,16 +1015,15 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
         )}
       </div>
 
-      {/* Per-Question Dynamic Countdown Progress Bar */}
+      {/* Clean Dynamic Countdown Progress Line */}
       {sessionStatus === 'recording' && (
         <div style={{
           maxWidth: '720px',
-          margin: '0.5rem auto 0 auto',
+          margin: '0.45rem auto 0 auto',
           backgroundColor: '#e2e8f0',
-          height: '6px',
+          height: '4px',
           borderRadius: '9999px',
           overflow: 'hidden',
-          boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.1)',
         }}>
           <div style={{
             height: '100%',
@@ -882,11 +1051,11 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
         </div>
       )}
 
-      {/* Control Bar: Switch to Text vs Manual Advance / Done Button */}
+      {/* Control Bar: Done Answering & Mode Switch */}
       <div style={{
-        marginTop: '1.25rem',
+        marginTop: '1rem',
         maxWidth: '720px',
-        margin: '1.25rem auto 0 auto',
+        margin: '1rem auto 0 auto',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
@@ -924,7 +1093,7 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
             >
               {isLastQuestion
                 ? '🏁 Done Answering & Finish Interview'
-                : 'Done Answering & Answer Next Question →'}
+                : 'Done Answering & Next Question →'}
             </Button>
           </div>
         )}
@@ -932,3 +1101,4 @@ export const AnswerRecorder: React.FC<AnswerRecorderProps> = ({
     </div>
   );
 };
+

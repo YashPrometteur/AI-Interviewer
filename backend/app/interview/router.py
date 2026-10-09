@@ -10,14 +10,18 @@ from pymongo.database import Database
 from app.db.database import get_db
 from app.db.schemas import (
     SessionCreateResponse, SessionListItem, NextQuestionResponse,
+    QuestionOut, SessionQuestionsListResponse,
     AnswerSubmitRequest, AnswerEvaluationOut, CompleteSessionResponse
 )
 from app.interview import service
 from app.interview import media
 from app.interview import tts
 from app.interview import avatar
+from app.interview.audio_stream import router as audio_stream_router
 
 router = APIRouter()
+router.include_router(audio_stream_router)
+
 
 @router.post("/sessions", response_model=SessionCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_interview_session(
@@ -25,6 +29,7 @@ async def create_interview_session(
     candidate_email: str = Form(..., description="Email address of candidate"),
     jd_text: str = Form(..., description="Full text of Job Description"),
     resume_file: UploadFile = File(..., description="Candidate resume (PDF, DOCX, TXT)"),
+    position: Optional[str] = Form("Software Engineer", description="Position/Role applied for"),
     interview_mode: str = Form("live", description="Interview mode: 'live' or 'async'"),
     answer_capture_type: str = Form("text", description="Answer capture type: 'text' or 'video'"),
     interviewer_photo: Optional[UploadFile] = File(None, description="Optional portrait photo for interviewer avatar"),
@@ -41,6 +46,7 @@ async def create_interview_session(
         jd_text=jd_text,
         resume_bytes=resume_bytes,
         resume_filename=resume_file.filename or "resume.pdf",
+        position=position,
         interview_mode=interview_mode,
         answer_capture_type=answer_capture_type,
         interviewer_photo_bytes=photo_bytes,
@@ -52,6 +58,16 @@ async def create_interview_session(
 def list_interview_sessions(db: Database = Depends(get_db)):
     """Retrieves all interview sessions for recruiter dashboard monitoring."""
     return service.list_sessions(db)
+
+@router.get("/sessions/{session_id}/questions", response_model=SessionQuestionsListResponse)
+def get_session_questions_endpoint(session_id: str, db: Database = Depends(get_db)):
+    """Retrieves all generated questions for a session to allow candidate to maneuver through the question bank."""
+    return service.get_session_questions(db, session_id)
+
+@router.get("/sessions/{session_id}/questions/{question_id}", response_model=QuestionOut)
+def get_session_question_by_id_endpoint(session_id: str, question_id: str, db: Database = Depends(get_db)):
+    """Retrieves a specific question from the question bank by ID."""
+    return service.get_session_question_by_id(db, session_id, question_id)
 
 @router.get("/sessions/{session_id}/next-question", response_model=NextQuestionResponse)
 def get_next_question_endpoint(session_id: str, exclude_id: Optional[str] = None, db: Database = Depends(get_db)):
@@ -133,7 +149,9 @@ async def submit_answer_recording_endpoint(
 
     # 3. Transcribe recording using Whisper with technical vocabulary biasing and phonetic repair
     transcribed = media.transcribe_recording(recording_path, skill_tag=skill_tag, question_text=question_text)
-    transcribed_text = transcribed.get("text", "").strip()
+    transcribed_text = (transcribed.get("text") or "").strip()
+    if not transcribed_text or len(transcribed_text) < 2:
+        transcribed_text = "[No audible response detected in recording]"
 
     # 4. Pass transcribed text into existing submit_answer pipeline
     return service.submit_answer(
@@ -147,8 +165,42 @@ async def submit_answer_recording_endpoint(
         transcription_mode=transcribed.get("transcription_mode", "real")
     )
 
+
+@router.post("/sessions/{session_id}/transcribe-chunk")
+async def transcribe_audio_chunk_endpoint(
+    session_id: str,
+    chunk_file: UploadFile = File(..., description="Short audio chunk for live transcript preview"),
+    question_id: Optional[str] = Form(None)
+):
+    """Fast intermediate chunk transcription endpoint for live candidate speech preview."""
+    file_bytes = await chunk_file.read()
+    if not file_bytes or len(file_bytes) < 50:
+        return {"text": "", "confidence": 0.0}
+
+    # Save to temp chunk file
+    temp_dir = Path(settings.RECORDINGS_DIR) / "chunks"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_dir / f"chunk_{session_id}_{os.urandom(4).hex()}.webm"
+    try:
+        with open(temp_path, "wb") as f:
+            f.write(file_bytes)
+        transcribed = media.transcribe_recording(str(temp_path))
+        return {
+            "text": transcribed.get("text", "").strip(),
+            "confidence": transcribed.get("confidence", 0.95),
+            "mode": transcribed.get("transcription_mode", "real")
+        }
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+
+
 @router.post("/sessions/{session_id}/complete", response_model=CompleteSessionResponse)
 def complete_session_endpoint(session_id: str, db: Database = Depends(get_db)):
+
     """Finalizes the interview, computes overall weighted score, and generates the final evaluation report."""
     return service.complete_session(db, session_id)
 

@@ -4,6 +4,7 @@ import { Card } from '../../components/Card';
 import { getDifficultyBadgeColor } from '../../lib/utils';
 import { Question } from '../../lib/types';
 import { api } from '../../lib/api';
+import { LiveEqualizer } from './LiveEqualizer';
 
 interface QuestionCardProps {
   question: Question;
@@ -23,8 +24,6 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
   const [audioError, setAudioError] = useState(false);
   const [videoError, setVideoError] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
-  const [currentMouthScale, setCurrentMouthScale] = useState(1.0);
-  const animationFrameRef = useRef<number | null>(null);
 
   const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -53,46 +52,9 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
         ? api.getInterviewerPhotoUrl(question.session_id)
         : null);
 
+  // Avatar (video or photo fallback) is only shown for main questions, not counter questions
   const hasVideoAvatar = Boolean(avatarVideoUrl && !videoError && !question.is_followup);
-  const hasPhotoAvatar = Boolean(interviewerPhotoUrl && (question.is_followup || videoError || !avatarVideoUrl));
-
-  // Dynamic Mouth Animation loop for follow-up questions
-  useEffect(() => {
-    const updateMouth = () => {
-      if (audioRef.current && isPlaying && question.mouth_amplitude_track && question.mouth_amplitude_track.length > 0) {
-        const currentTimeMs = audioRef.current.currentTime * 1000.0;
-        const chunkIndex = Math.min(
-          question.mouth_amplitude_track.length - 1,
-          Math.max(0, Math.floor(currentTimeMs / 50.0))
-        );
-        const amp = question.mouth_amplitude_track[chunkIndex] || 0.0;
-        // Scale vertical stretch between 1.0 (closed) and 1.7 (wide open)
-        setCurrentMouthScale(1.0 + amp * 0.7);
-      } else if (isPlaying) {
-        // Fallback rhythmic subtle breathing/talking movement if amplitude track empty
-        const t = Date.now() / 150;
-        setCurrentMouthScale(1.0 + Math.abs(Math.sin(t)) * 0.35);
-      } else {
-        setCurrentMouthScale(1.0);
-      }
-
-      if (isPlaying) {
-        animationFrameRef.current = requestAnimationFrame(updateMouth);
-      }
-    };
-
-    if (isPlaying) {
-      animationFrameRef.current = requestAnimationFrame(updateMouth);
-    } else {
-      setCurrentMouthScale(1.0);
-    }
-
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, [isPlaying, question.mouth_amplitude_track]);
+  const hasPhotoAvatar = Boolean(interviewerPhotoUrl && !question.is_followup && (videoError || !avatarVideoUrl));
 
   // Handle Playback Speed Change
   const handleSpeedChange = (speed: number) => {
@@ -161,6 +123,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
       {/* Underlying Audio Player (used when video is absent or in amplitude animation mode) */}
       {audioUrl && !hasVideoAvatar && (
         <audio
+          key={question.id}
           ref={audioRef}
           src={audioUrl}
           onPlay={() => setIsPlaying(true)}
@@ -326,20 +289,13 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
             </div>
 
             {isPlaying && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '3px', height: '16px' }}>
-                <span style={{ width: '3px', height: '100%', backgroundColor: '#2563eb', borderRadius: '2px', animation: 'waveform 0.6s ease-in-out infinite alternate' }} />
-                <span style={{ width: '3px', height: '60%', backgroundColor: '#3b82f6', borderRadius: '2px', animation: 'waveform 0.8s ease-in-out infinite alternate 0.2s' }} />
-                <span style={{ width: '3px', height: '100%', backgroundColor: '#2563eb', borderRadius: '2px', animation: 'waveform 0.5s ease-in-out infinite alternate 0.4s' }} />
-                <span style={{ width: '3px', height: '40%', backgroundColor: '#60a5fa', borderRadius: '2px', animation: 'waveform 0.7s ease-in-out infinite alternate 0.1s' }} />
-                <span style={{ fontSize: '0.75rem', color: '#2563eb', fontWeight: 600, marginLeft: '4px' }}>
-                  AI Interviewer Speaking...
-                </span>
-              </div>
+              <LiveEqualizer isActive={true} mode="speaking" />
             )}
+
           </div>
         </div>
 
-        {/* Phase 5 Avatar Presentation Column */}
+        {/* Avatar Presentation Column */}
         {(hasVideoAvatar || hasPhotoAvatar) && (
           <div
             onClick={togglePlay}

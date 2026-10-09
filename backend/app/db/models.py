@@ -118,6 +118,7 @@ def build_session_document(
     candidate_email: str,
     resume_text: str,
     jd_text: str,
+    job_role: Optional[str] = "Software Engineer",
     skill_weights: Optional[Dict[str, float]] = None,
     questions: Optional[List[Dict[str, Any]]] = None,
     status: str = "in_progress",
@@ -125,12 +126,14 @@ def build_session_document(
     answer_capture_type: str = "text",
     session_deadline: Optional[datetime] = None,
     interviewer_photo_url: Optional[str] = None,
-    interviewer_gender: Optional[str] = None
+    interviewer_gender: Optional[str] = None,
+    invitation_email: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Builds a complete, canonical Session MongoDB document with embedded candidate, questions, avatar, and lifecycle metadata."""
     now = datetime.now(timezone.utc)
     return {
         "candidate": build_candidate_entry(candidate_name, candidate_email, resume_text),
+        "job_role": (job_role or "Software Engineer").strip(),
         "jd_text": jd_text.strip(),
         "status": status,  # pending, in_progress, completed, expired, abandoned
         "interview_mode": (interview_mode or "live").lower().strip(),  # live, async
@@ -138,6 +141,7 @@ def build_session_document(
         "session_deadline": session_deadline,
         "interviewer_photo_url": interviewer_photo_url,
         "interviewer_gender": interviewer_gender,
+        "invitation_email": invitation_email,
         "last_active_at": now,
         "skill_weights": skill_weights or {},
         "questions": questions or [],

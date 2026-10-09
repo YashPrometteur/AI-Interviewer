@@ -30,6 +30,32 @@ class QuestionOut(BaseModel):
     mock: Optional[bool] = False
     model_config = ConfigDict(from_attributes=True)
 
+class SessionQuestionItem(BaseModel):
+    id: str
+    session_id: str
+    text: str
+    skill_tag: str
+    difficulty: str
+    order_index: Union[int, float]
+    is_followup: Optional[bool] = False
+    parent_question_id: Optional[str] = None
+    is_answered: bool = False
+    score: Optional[float] = None
+    answer_text: Optional[str] = None
+    audio_url: Optional[str] = None
+    avatar_video_url: Optional[str] = None
+    mouth_amplitude_track: Optional[List[float]] = None
+    interviewer_photo_url: Optional[str] = None
+    mock: Optional[bool] = False
+    model_config = ConfigDict(from_attributes=True)
+
+class SessionQuestionsListResponse(BaseModel):
+    session_id: str
+    total_questions: int
+    answered_count: int
+    questions: List[SessionQuestionItem]
+    current_question_id: Optional[str] = None
+
 class NextQuestionResponse(BaseModel):
     question: Optional[QuestionOut] = None
     remaining_count: int
@@ -44,7 +70,7 @@ class NextQuestionResponse(BaseModel):
 # --- Answer Schemas ---
 class AnswerSubmitRequest(BaseModel):
     question_id: str
-    answer_text: str = Field(..., min_length=1, description="Candidate's typed answer")
+    answer_text: str = Field(default="", min_length=0, description="Candidate's typed answer")
 
 class AnswerEvaluationOut(BaseModel):
     answer_id: str
@@ -156,6 +182,10 @@ class SessionCreateResponse(BaseModel):
     answer_capture_type: Optional[str] = "text"
     session_deadline: Optional[datetime] = None
     interviewer_photo_url: Optional[str] = None
+    position: Optional[str] = "Software Engineer"
+    email_sent: Optional[bool] = True
+    email_subject: Optional[str] = None
+    email_body: Optional[str] = None
     mock: Optional[bool] = False
 
 class SessionListItem(BaseModel):

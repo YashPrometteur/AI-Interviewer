@@ -13,17 +13,13 @@ export const AnswerInput: React.FC<AnswerInputProps> = ({ onSubmit, isLoading })
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = answer.trim();
-    if (!trimmed || trimmed.length < 2) {
-      setError('Please provide a substantive answer before submitting.');
-      return;
-    }
+    const textToSubmit = answer.trim() || '[No answer provided]';
     setError(null);
     try {
-      await onSubmit(trimmed);
+      await onSubmit(textToSubmit);
       setAnswer('');
     } catch (err: any) {
-      setError(err.message || 'Failed to evaluate answer. Please try again.');
+      setError(err.message || 'Failed to submit answer. Please try again.');
     }
   };
 
@@ -96,7 +92,7 @@ export const AnswerInput: React.FC<AnswerInputProps> = ({ onSubmit, isLoading })
           type="submit"
           variant="primary"
           isLoading={isLoading}
-          disabled={isLoading || !answer.trim()}
+          disabled={isLoading}
           style={{ padding: '0.75rem 2rem', fontSize: '1rem' }}
         >
           {isLoading ? 'Evaluating Answer...' : 'Submit Answer & Continue →'}

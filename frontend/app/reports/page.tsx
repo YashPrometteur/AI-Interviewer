@@ -139,11 +139,22 @@ function ReportContent() {
               ⚠️ MOCK EVALUATION
             </span>
           )}
-          <Button variant="secondary" onClick={() => window.print()} style={{ fontSize: '0.85rem' }}>
+          <a
+            href={api.getReportExportUrl(sessionId)}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ textDecoration: 'none' }}
+          >
+            <Button variant="secondary" style={{ fontSize: '0.85rem' }}>
+              📄 Standalone Scorecard ↗
+            </Button>
+          </a>
+          <Button variant="primary" onClick={() => window.print()} style={{ fontSize: '0.85rem' }}>
             🖨️ Print / Export PDF
           </Button>
         </div>
       </div>
+
 
       {/* Candidate Overview Card */}
       <Card style={{ marginBottom: '1.5rem', padding: '1.75rem' }}>

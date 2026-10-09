@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
-import { Question, AnswerEvaluation } from '../../lib/types';
+import { Question, AnswerEvaluation, SessionQuestionItem } from '../../lib/types';
 import { QuestionCard } from './QuestionCard';
 import { AnswerInput } from './AnswerInput';
 import { AnswerRecorder } from './AnswerRecorder';
@@ -19,6 +19,7 @@ export const InterviewRoom: React.FC<InterviewRoomProps> = ({ sessionId }) => {
   const router = useRouter();
 
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null);
+  const [allQuestionsList, setAllQuestionsList] = useState<SessionQuestionItem[]>([]);
   const [questionNumber, setQuestionNumber] = useState(1);
   const [totalQuestions, setTotalQuestions] = useState(3);
   const [remainingQuestionsCount, setRemainingQuestionsCount] = useState<number>(3);
@@ -65,6 +66,18 @@ export const InterviewRoom: React.FC<InterviewRoomProps> = ({ sessionId }) => {
     }
   }, [interviewMode, isCompleting]);
 
+  const refreshQuestionsList = useCallback(async () => {
+    try {
+      const data = await api.getSessionQuestions(sessionId);
+      if (data && data.questions) {
+        setAllQuestionsList(data.questions);
+        setTotalQuestions(data.total_questions);
+      }
+    } catch (e) {
+      console.warn('[InterviewRoom] Could not load questions list:', e);
+    }
+  }, [sessionId]);
+
   const fetchQuestion = useCallback(async (retryCount = 0) => {
     try {
       setIsLoading(true);
@@ -98,17 +111,17 @@ export const InterviewRoom: React.FC<InterviewRoomProps> = ({ sessionId }) => {
       setQuestionNumber(qNum);
       if (res.question.mock) setIsMockSession(true);
       setTotalQuestions((prev) => Math.max(prev, qNum + res.remaining_count - 1));
+      await refreshQuestionsList();
       setIsLoading(false);
     } catch (err: any) {
       if (retryCount < 3) {
-        // Retry after short delay in case background video rendering is finalizing
         setTimeout(() => fetchQuestion(retryCount + 1), 2000);
       } else {
         setErrorMessage(err.message || 'Error fetching next question.');
         setIsLoading(false);
       }
     }
-  }, [sessionId]);
+  }, [sessionId, refreshQuestionsList]);
 
   useEffect(() => {
     if (sessionId) {
@@ -116,15 +129,35 @@ export const InterviewRoom: React.FC<InterviewRoomProps> = ({ sessionId }) => {
     }
   }, [sessionId, fetchQuestion]);
 
+  // Maneuver directly to a specific question
+  const handleSelectQuestion = async (targetQId: string) => {
+    if (currentQuestion?.id === targetQId) return;
+    try {
+      setIsLoading(true);
+      setErrorMessage(null);
+      setLastEvaluation(null);
+      const q = await api.getSessionQuestionById(sessionId, targetQId);
+      setCurrentQuestion(q);
+      const qIndex = allQuestionsList.findIndex((item) => item.id === targetQId);
+      setQuestionNumber(qIndex !== -1 ? qIndex + 1 : (q.order_index != null ? q.order_index + 1 : 1));
+      if (q.mock) setIsMockSession(true);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to switch question.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Video Mode: Question-Wise submission
   const handleContinuousQuestionSubmit = useCallback(async (chunkBlob: Blob, questionId: string) => {
     try {
       const res = await api.submitAnswerRecording(sessionId, questionId, chunkBlob);
       console.log(`[InterviewRoom] Evaluated Q: ${questionId}`, res);
+      await refreshQuestionsList();
     } catch (err: any) {
       console.error('[InterviewRoom] Submit question error:', err);
     }
-  }, [sessionId]);
+  }, [sessionId, refreshQuestionsList]);
 
   // Video Mode: Advance to next question seamlessly without unmounting camera
   const handleAdvanceToNextQuestion = useCallback(async () => {
@@ -147,10 +180,11 @@ export const InterviewRoom: React.FC<InterviewRoomProps> = ({ sessionId }) => {
       }
       setRemainingQuestionsCount(res.remaining_count);
       if (res.question.mock) setIsMockSession(true);
+      await refreshQuestionsList();
     } catch (err: any) {
       setErrorMessage(err.message || 'Error advancing to next question.');
     }
-  }, [sessionId, currentQuestion]);
+  }, [sessionId, currentQuestion, refreshQuestionsList]);
 
   // Video Mode: Finalize master session video upload and finish session
   const handleFinishMasterSession = useCallback(async (masterBlob: Blob) => {
@@ -513,9 +547,136 @@ export const InterviewRoom: React.FC<InterviewRoomProps> = ({ sessionId }) => {
         </Card>
       )}
 
-      {/* Active Question Display */}
+      {/* Active Question Display & Navigation Maneuver Bar */}
       {currentQuestion && (!lastEvaluation || activeCaptureMode === 'video') && (
         <>
+          {/* Question Maneuver & Navigation Bar */}
+          {allQuestionsList.length > 0 && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              backgroundColor: '#ffffff',
+              border: '1px solid #e2e8f0',
+              borderRadius: '12px',
+              padding: '0.65rem 1rem',
+              marginBottom: '1rem',
+              gap: '0.75rem',
+              flexWrap: 'wrap',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{
+                  fontSize: '0.75rem',
+                  fontWeight: 800,
+                  color: '#64748b',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}>
+                  Jump to Question:
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  {allQuestionsList.map((item, idx) => {
+                    const isSelected = item.id === currentQuestion?.id;
+                    const num = item.order_index != null ? item.order_index + 1 : idx + 1;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleSelectQuestion(item.id)}
+                        title={`Question ${num}: ${item.skill_tag || 'Interview Question'} (${item.difficulty || 'Medium'})`}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.3rem',
+                          padding: '0.3rem 0.65rem',
+                          fontSize: '0.8rem',
+                          fontWeight: isSelected ? 700 : 600,
+                          borderRadius: '8px',
+                          border: isSelected
+                            ? '1.5px solid #2563eb'
+                            : item.is_answered
+                            ? '1px solid #86efac'
+                            : '1px solid #cbd5e1',
+                          backgroundColor: isSelected
+                            ? '#2563eb'
+                            : item.is_answered
+                            ? '#f0fdf4'
+                            : '#f8fafc',
+                          color: isSelected
+                            ? '#ffffff'
+                            : item.is_answered
+                            ? '#166534'
+                            : '#475569',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease',
+                          boxShadow: isSelected ? '0 2px 6px rgba(37, 99, 235, 0.35)' : 'none',
+                        }}
+                      >
+                        {item.is_answered && !isSelected && <span style={{ color: '#16a34a' }}>✓</span>}
+                        {isSelected && <span style={{ fontSize: '0.7rem' }}>●</span>}
+                        <span>Q{num}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Step Navigation Prev / Next */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                {(() => {
+                  const currIdx = allQuestionsList.findIndex((q) => q.id === currentQuestion?.id);
+                  const canGoPrev = currIdx > 0;
+                  const canGoNext = currIdx >= 0 && currIdx < allQuestionsList.length - 1;
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        disabled={!canGoPrev}
+                        onClick={() => {
+                          if (canGoPrev) handleSelectQuestion(allQuestionsList[currIdx - 1].id);
+                        }}
+                        style={{
+                          padding: '0.3rem 0.6rem',
+                          fontSize: '0.78rem',
+                          fontWeight: 600,
+                          backgroundColor: canGoPrev ? '#f1f5f9' : '#f8fafc',
+                          color: canGoPrev ? '#334155' : '#cbd5e1',
+                          border: '1px solid #cbd5e1',
+                          borderRadius: '6px',
+                          cursor: canGoPrev ? 'pointer' : 'not-allowed',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        ← Prev
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canGoNext}
+                        onClick={() => {
+                          if (canGoNext) handleSelectQuestion(allQuestionsList[currIdx + 1].id);
+                        }}
+                        style={{
+                          padding: '0.3rem 0.6rem',
+                          fontSize: '0.78rem',
+                          fontWeight: 600,
+                          backgroundColor: canGoNext ? '#f1f5f9' : '#f8fafc',
+                          color: canGoNext ? '#334155' : '#cbd5e1',
+                          border: '1px solid #cbd5e1',
+                          borderRadius: '6px',
+                          cursor: canGoNext ? 'pointer' : 'not-allowed',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        Next →
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
+
           <QuestionCard
             question={currentQuestion}
             questionNumber={questionNumber}
@@ -526,6 +687,7 @@ export const InterviewRoom: React.FC<InterviewRoomProps> = ({ sessionId }) => {
             <AnswerRecorder
               sessionId={sessionId}
               activeQuestionId={currentQuestion.id}
+              questionText={currentQuestion.text}
               questionDifficulty={currentQuestion.difficulty}
               questionNumber={questionNumber}
               totalQuestions={totalQuestions}

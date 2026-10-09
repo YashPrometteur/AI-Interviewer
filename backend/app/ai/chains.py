@@ -320,12 +320,17 @@ def evaluate_answer_mock_heuristic(question: str, skill_tag: str, answer_text: s
     """Keyword-aware heuristic fallback for Mock Mode (used only when both Groq and Ollama fail)."""
     cleaned = (answer_text or "").strip().lower()
     
-    negative_triggers = ["idk", "dont know", "no idea", "asdf", "test", "not coding", "sales", "retail", "lol", "i do sales", "not a developer"]
-    if any(trigger in cleaned for trigger in negative_triggers) or len(cleaned.split()) < 5:
+    negative_triggers = [
+        "idk", "dont know", "no idea", "asdf", "test", "not coding", "sales", "retail", "lol",
+        "i do sales", "not a developer", "i dont remember", "dont remember", "i don't know",
+        "i don't remember", "don't remember", "not sure", "skip", "[no answer provided]",
+        "[no audible response detected in recording]"
+    ]
+    if not cleaned or any(trigger in cleaned for trigger in negative_triggers) or len(cleaned.split()) < 3:
         return {
-            "score": 2.0,
-            "reasoning": f"Mock evaluation: Candidate response lacks technical relevance to '{skill_tag}' and contains evasive or non-engineering content.",
-            "red_flag": True,
+            "score": 0.0,
+            "reasoning": f"Candidate did not provide a technical answer for '{skill_tag}' (e.g. stated they do not remember or skipped).",
+            "red_flag": False,
             "needs_followup": False,
             "followup_question": None,
             "followup_reason": None,
@@ -444,11 +449,16 @@ def run_llm_evaluation(llm, question: str, skill_tag: str, answer_text: str, is_
 def evaluate_answer(question: str, skill_tag: str, answer_text: str, is_transcribed: bool = False) -> Dict[str, Any]:
     """Evaluates candidate response via Fallback Chain: Groq -> Ollama -> Heuristic Mock."""
     cleaned = (answer_text or "").strip()
-    if len(cleaned) < 5 or cleaned.lower() in ["idk", "dont know", "no idea", "asdf", "test"]:
+    negative_triggers = [
+        "idk", "dont know", "no idea", "asdf", "test", "i dont know", "i dont remember",
+        "dont remember", "i don't know", "i don't remember", "don't remember", "not sure",
+        "skip", "[no answer provided]", "[no audible response detected in recording]"
+    ]
+    if not cleaned or len(cleaned) < 3 or any(trigger in cleaned.lower() for trigger in negative_triggers):
         return {
             "score": 0.0,
-            "reasoning": "Answer is evasive, empty, or lacks meaningful technical substance.",
-            "red_flag": True,
+            "reasoning": "Candidate did not provide a technical answer (e.g. stated they do not know, do not remember, or skipped the question).",
+            "red_flag": False,
             "needs_followup": False,
             "followup_question": None,
             "followup_reason": None,

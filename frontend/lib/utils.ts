@@ -1,5 +1,3 @@
-// Phase 1: Shared UI helper utilities for badges, score colors, formatting, and recommendations.
-
 export function formatScoreBadge(score: number | null | undefined): { label: string; bg: string; text: string } {
   if (score === null || score === undefined) {
     return { label: 'Pending', bg: '#f1f5f9', text: '#64748b' };

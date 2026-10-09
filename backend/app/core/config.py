@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     TRANSCRIPTION_PROVIDER: str = "groq"
     GROQ_WHISPER_MODEL: str = "whisper-large-v3"
     # Whisper model size for local fallback inference: "tiny", "base", "small", "medium"
-    WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_MODEL_SIZE: str = "medium"
     # Paths
     BACKEND_DIR: str = str(BACKEND_DIR)
     RECORDINGS_DIR: str = os.path.join(str(BACKEND_DIR), "uploads", "recordings")
@@ -72,8 +72,9 @@ class Settings(BaseSettings):
     TTS_LENGTH_SCALE: float = 1.28
     MAX_FOLLOWUPS_PER_QUESTION: int = 1
 
-    # Phase 5: Avatar Configuration (local Wav2Lip or premium D-ID)
-    AVATAR_PROVIDER: str = "local"  # "local" (free Wav2Lip on CPU) or "did" (premium D-ID API)
+    # Phase 5: Avatar Configuration (gpu, local Wav2Lip, or premium D-ID)
+    AVATAR_PROVIDER: str = "local"  # "gpu" (Colab / remote GPU microservice), "local" (free Wav2Lip on CPU), or "did" (premium D-ID API)
+    AVATAR_GPU_URL: str = ""  # e.g. "https://xxxx-xx.ngrok-free.app/generate" or "http://192.168.1.50:8000/generate"
     D_ID_API_KEY: str = ""
     D_ID_MALE_VOICE: str = "en-US-GuyNeural"
     D_ID_FEMALE_VOICE: str = "en-US-JennyNeural"
@@ -83,6 +84,16 @@ class Settings(BaseSettings):
     # Phase 2: Session Lifecycle & Interview Modes
     ASYNC_SESSION_DEADLINE_DAYS: int = 3
     LIVE_SESSION_TIMEOUT_MINUTES: int = 60
+
+    # Email & SMTP Settings
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "aditi.k@prometteur.in")
+    SMTP_FROM_NAME: str = os.getenv("SMTP_FROM_NAME", "Aditi Kumar - Prometteur Solutions")
+    SMTP_USE_TLS: bool = True
+    FRONTEND_BASE_URL: str = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
 
     # Auth
     JWT_SECRET: str = "supersecret_ai_interviewer_jwt_key_phase1"

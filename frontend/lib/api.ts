@@ -1,8 +1,9 @@
-// Phase 1: Typed API client for backend communication.
 import {
   SessionCreateResponse,
   SessionListItem,
   NextQuestionResponse,
+  Question,
+  SessionQuestionsListResponse,
   AnswerEvaluation,
   FullReportResponse,
   ProctoringEvent,
@@ -47,6 +48,28 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
     });
     return handleResponse<SessionListItem[]>(res);
+  },
+
+  /**
+   * Fetches all generated questions for candidate maneuvering.
+   */
+  async getSessionQuestions(sessionId: string): Promise<SessionQuestionsListResponse> {
+    const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/questions`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return handleResponse<SessionQuestionsListResponse>(res);
+  },
+
+  /**
+   * Fetches a specific question by ID.
+   */
+  async getSessionQuestionById(sessionId: string, questionId: string): Promise<Question> {
+    const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/questions/${questionId}`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return handleResponse<Question>(res);
   },
 
   /**
@@ -179,10 +202,32 @@ export const api = {
   },
 
   /**
+   * Returns the URL to download or view the printable HTML/PDF scorecard report.
+   */
+  getReportExportUrl(sessionId: string): string {
+    return `${API_BASE}/api/reports/${sessionId}/export`;
+  },
+
+
+  /**
    * Returns the direct URL to the pre-synthesized Piper TTS WAV audio for a question.
    */
   getQuestionAudioUrl(sessionId: string, questionId: string): string {
     return `${API_BASE}/api/sessions/${sessionId}/questions/${questionId}/audio`;
+  },
+
+  /**
+   * Returns the direct URL to the zero-latency streaming Piper TTS audio for a question.
+   */
+  getStreamQuestionAudioUrl(sessionId: string, questionId: string): string {
+    return `${API_BASE}/api/sessions/${sessionId}/questions/${questionId}/stream-audio`;
+  },
+
+  /**
+   * Returns the API endpoint URL for streaming speech text directly.
+   */
+  getStreamSpeechUrl(): string {
+    return `${API_BASE}/api/stream-speech`;
   },
 
   /**
@@ -199,4 +244,5 @@ export const api = {
     return `${API_BASE}/api/sessions/${sessionId}/interviewer-photo`;
   },
 };
+
 

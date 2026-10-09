@@ -11,11 +11,13 @@ from pymongo.database import Database
 from fastapi import HTTPException, status
 
 from app.core.config import settings
+from app.core.email_service import send_invitation_email
 from app.db.models import (
     build_session_document, build_question_entry, build_answer_entry, build_report_entry
 )
 from app.db.schemas import (
     SessionCreateResponse, SessionListItem, QuestionOut,
+    SessionQuestionItem, SessionQuestionsListResponse,
     NextQuestionResponse, AnswerEvaluationOut, CompleteSessionResponse, ReportOut
 )
 from app.interview.parser import parse_resume, extract_skills_from_jd, extract_candidate_background
@@ -129,6 +131,7 @@ def start_session(
     jd_text: str,
     resume_bytes: bytes,
     resume_filename: str,
+    position: Optional[str] = "Software Engineer",
     interview_mode: str = "live",
     answer_capture_type: str = "text",
     interviewer_photo_bytes: Optional[bytes] = None,
@@ -136,7 +139,8 @@ def start_session(
     interviewer_gender: Optional[str] = "auto"
 ) -> SessionCreateResponse:
     """Validates inputs, extracts skills & background, generates question bank upfront, sets deadline if async,
-    pre-synthesizes TTS audio and optional Wav2Lip lip-sync avatar videos, and persists session to MongoDB.
+    pre-synthesizes TTS audio and optional Wav2Lip lip-sync avatar videos, sends invitation email to candidate,
+    and persists session to MongoDB.
     """
     # 0. Enforce database capacity management (prunes oldest 10 when count >= 50)
     prune_old_sessions_if_needed(db)
@@ -153,6 +157,8 @@ def start_session(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Job description is too short ({len(jd_text.strip())} chars). Please provide at least {settings.MIN_TEXT_LENGTH} characters of JD text."
         )
+
+    effective_position = (position or "Software Engineer").strip()
 
     # 2. Extract and validate resume text
     resume_text = parse_resume(resume_bytes, resume_filename)
@@ -230,7 +236,23 @@ def start_session(
                 avatar_dir.mkdir(parents=True, exist_ok=True)
                 video_target_path = avatar_dir / f"{session_id_str}_{q_id}.mp4"
 
-                if settings.AVATAR_PROVIDER == "did" and settings.D_ID_API_KEY:
+                if (settings.AVATAR_PROVIDER in ("gpu", "colab", "custom_gpu") or settings.AVATAR_GPU_URL) and settings.AVATAR_GPU_URL:
+                    try:
+                        audio_path = tts.get_question_audio_path(session_id_str, q_id)
+                        if audio_path and audio_path.exists():
+                            avatar.render_gpu_avatar_video(
+                                photo_path=str(photo_file_path),
+                                audio_path=str(audio_path),
+                                output_path=str(video_target_path)
+                            )
+                            avatar_video_url = f"/sessions/{session_id_str}/questions/{q_id}/avatar-video"
+                    except Exception as gpu_err:
+                        logger.warning(f"[GPU AVATAR] Remote GPU render failed ({gpu_err}), falling back to local engine...")
+                        audio_path = tts.get_question_audio_path(session_id_str, q_id)
+                        if audio_path and audio_path.exists():
+                            avatar.render_lipsync_video(str(photo_file_path), str(audio_path), output_path=str(video_target_path))
+                            avatar_video_url = f"/sessions/{session_id_str}/questions/{q_id}/avatar-video"
+                elif settings.AVATAR_PROVIDER == "did" and settings.D_ID_API_KEY:
                     try:
                         avatar.render_did_video(
                             photo_path=str(photo_file_path),
@@ -277,12 +299,23 @@ def start_session(
     norm_capture = "video" if (answer_capture_type or "").lower().strip() == "video" else "text"
     session_deadline = now + timedelta(days=settings.ASYNC_SESSION_DEADLINE_DAYS) if norm_mode == "async" else None
 
-    # 8. Build and Insert Session Document into MongoDB
+    # 8. Send Invitation Email to Candidate
+    test_link_full = f"{settings.FRONTEND_BASE_URL}/interview?session_id={session_id_str}"
+    email_dispatch_res = send_invitation_email(
+        candidate_email=candidate_email.strip(),
+        candidate_name=candidate_name.strip(),
+        position=effective_position,
+        test_link=test_link_full,
+        deadline=session_deadline
+    )
+
+    # 9. Build and Insert Session Document into MongoDB
     session_doc = build_session_document(
         candidate_name=candidate_name,
         candidate_email=candidate_email,
         resume_text=resume_text,
         jd_text=jd_text,
+        job_role=effective_position,
         skill_weights=skills_result.get("skill_weights", {}),
         questions=embedded_questions,
         status="pending",
@@ -290,7 +323,8 @@ def start_session(
         answer_capture_type=norm_capture,
         session_deadline=session_deadline,
         interviewer_photo_url=interviewer_photo_url,
-        interviewer_gender=effective_gender
+        interviewer_gender=effective_gender,
+        invitation_email=email_dispatch_res
     )
     session_doc["_id"] = session_obj_id
     db.sessions.insert_one(session_doc)
@@ -305,8 +339,83 @@ def start_session(
         answer_capture_type=norm_capture,
         session_deadline=session_deadline,
         interviewer_photo_url=interviewer_photo_url,
+        position=effective_position,
+        email_sent=email_dispatch_res.get("sent", True),
+        email_subject=email_dispatch_res.get("subject"),
+        email_body=email_dispatch_res.get("body"),
         mock=is_mock
     )
+
+
+def get_session_questions(db: Database, session_id: str) -> SessionQuestionsListResponse:
+    """Returns all questions for a session to allow candidate to maneuver through the question bank."""
+    obj_id = parse_object_id(session_id)
+    session = db.sessions.find_one({"_id": obj_id})
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview session not found.")
+
+    questions = session.get("questions", [])
+    photo_url = session.get("interviewer_photo_url")
+    items = []
+    answered_count = 0
+    for q in questions:
+        has_ans = q.get("answer") is not None
+        if has_ans:
+            answered_count += 1
+        ans_data = q.get("answer") or {}
+        items.append(SessionQuestionItem(
+            id=q.get("question_id"),
+            session_id=session_id,
+            text=q.get("text"),
+            skill_tag=q.get("skill_tag"),
+            difficulty=q.get("difficulty"),
+            order_index=q.get("order_index", 0),
+            is_followup=q.get("is_followup", False),
+            parent_question_id=q.get("parent_question_id"),
+            is_answered=has_ans,
+            score=ans_data.get("score"),
+            answer_text=ans_data.get("answer_text", ans_data.get("text")),
+            audio_url=q.get("audio_url"),
+            avatar_video_url=q.get("avatar_video_url"),
+            mouth_amplitude_track=q.get("mouth_amplitude_track"),
+            interviewer_photo_url=photo_url,
+            mock=q.get("mock", False)
+        ))
+
+    items = sorted(items, key=lambda x: x.order_index)
+    return SessionQuestionsListResponse(
+        session_id=session_id,
+        total_questions=len(items),
+        answered_count=answered_count,
+        questions=items
+    )
+
+
+def get_session_question_by_id(db: Database, session_id: str, question_id: str) -> QuestionOut:
+    """Retrieves a specific question from the session question bank by ID."""
+    obj_id = parse_object_id(session_id)
+    session = db.sessions.find_one({"_id": obj_id})
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview session not found.")
+
+    for q in session.get("questions", []):
+        if q.get("question_id") == question_id:
+            return QuestionOut(
+                id=q.get("question_id"),
+                session_id=session_id,
+                text=q.get("text"),
+                skill_tag=q.get("skill_tag"),
+                difficulty=q.get("difficulty"),
+                order_index=q.get("order_index", 0),
+                is_followup=q.get("is_followup", False),
+                parent_question_id=q.get("parent_question_id"),
+                audio_url=q.get("audio_url"),
+                avatar_video_url=q.get("avatar_video_url"),
+                mouth_amplitude_track=q.get("mouth_amplitude_track"),
+                interviewer_photo_url=session.get("interviewer_photo_url"),
+                mock=q.get("mock", False)
+            )
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found in session.")
 
 
 def get_next_question(db: Database, session_id: str, exclude_question_id: Optional[str] = None) -> NextQuestionResponse:
@@ -351,8 +460,9 @@ def get_next_question(db: Database, session_id: str, exclude_question_id: Option
     answered_questions = [q for q in all_questions if q.get("answer") is not None]
 
     if not answered_questions:
-        # First question starts with lowest order index (usually Easy)
-        chosen_question = unanswered_questions[0]
+        # First question starts with lowest order index among main questions
+        unanswered_main = [q for q in unanswered_questions if not q.get("is_followup")]
+        chosen_question = unanswered_main[0] if unanswered_main else unanswered_questions[0]
     else:
         def get_ans_ts(x):
             ans = x.get("answer") or {}
@@ -366,7 +476,7 @@ def get_next_question(db: Database, session_id: str, exclude_question_id: Option
         sorted_answered = sorted(answered_questions, key=get_ans_ts, reverse=True)
         last_q = sorted_answered[0]
 
-        # Check if the most recently answered question has a pending unanswered follow-up
+        # 1. Check if the most recently answered question has a pending unanswered follow-up
         pending_followup = next(
             (q for q in unanswered_questions if q.get("is_followup") and q.get("parent_question_id") == last_q.get("question_id")),
             None
@@ -375,14 +485,20 @@ def get_next_question(db: Database, session_id: str, exclude_question_id: Option
         if pending_followup:
             chosen_question = pending_followup
         else:
-            last_score = last_q["answer"].get("score", 5.0)
-            last_diff = last_q.get("difficulty", "medium")
-            target_difficulty = determine_difficulty_progression(last_score, last_diff)
+            # 2. Otherwise, progress forward to the next unanswered MAIN question
+            unanswered_main = [q for q in unanswered_questions if not q.get("is_followup")]
+            if unanswered_main:
+                last_score = last_q["answer"].get("score", 5.0) if last_q.get("answer") else 5.0
+                last_diff = last_q.get("difficulty", "medium")
+                target_difficulty = determine_difficulty_progression(last_score, last_diff)
 
-            chosen_question = next(
-                (q for q in unanswered_questions if (q.get("difficulty") or "").lower() == target_difficulty),
-                unanswered_questions[0]
-            )
+                chosen_question = next(
+                    (q for q in unanswered_main if (q.get("difficulty") or "").lower() == target_difficulty),
+                    unanswered_main[0]
+                )
+            else:
+                # If all main questions answered, fallback to any remaining unanswered question
+                chosen_question = unanswered_questions[0]
 
     q_out = QuestionOut(
         id=chosen_question["question_id"],
@@ -422,11 +538,8 @@ def submit_answer(
 ) -> AnswerEvaluationOut:
     """Evaluates candidate response via Fallback Chain (Groq -> Ollama -> Mock), tags tier & media metadata, embeds Answer in MongoDB, and triggers dynamic follow-up if warranted."""
     cleaned_answer = (answer_text or "").strip()
-    if not cleaned_answer or len(cleaned_answer) < 2:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Answer text cannot be empty or whitespace-only. Please submit a valid technical response."
-        )
+    if not cleaned_answer:
+        cleaned_answer = "[No answer provided]"
 
     obj_id = parse_object_id(session_id)
     session = db.sessions.find_one({"_id": obj_id})
@@ -501,21 +614,13 @@ def submit_answer(
             fq_text = eval_result["followup_question"].strip()
             fq_id = str(uuid.uuid4())
             fq_audio_url = None
-            fq_mouth_track = None
             try:
                 followup_gender = session.get("interviewer_gender", "female")
                 followup_voice = "en_US-ryan-medium" if followup_gender == "male" else "en_US-lessac-medium"
                 tts.synthesize_and_save_question_audio(session_id, fq_id, fq_text, voice_name=followup_voice)
                 fq_audio_url = f"/sessions/{session_id}/questions/{fq_id}/audio"
-
-                # Lightweight real-time amplitude track extraction for live follow-up avatar animation
-                fq_audio_path = tts.get_question_audio_path(session_id, fq_id)
-                if fq_audio_path and fq_audio_path.exists():
-                    with open(fq_audio_path, "rb") as f:
-                        fq_bytes = f.read()
-                    fq_mouth_track = avatar.extract_mouth_amplitude_track(fq_bytes)
             except Exception as e:
-                logger.warning(f"[TTS/AVATAR] Follow-up audio/amplitude synthesis failed for Q:{fq_id}: {e}")
+                logger.warning(f"[TTS] Follow-up audio synthesis failed for Q:{fq_id}: {e}")
 
             followup_q_entry = build_question_entry(
                 text=fq_text,
@@ -527,7 +632,7 @@ def submit_answer(
                 parent_question_id=question_id,
                 audio_url=fq_audio_url,
                 avatar_video_url=None,
-                mouth_amplitude_track=fq_mouth_track
+                mouth_amplitude_track=None
             )
             db.sessions.update_one(
                 {"_id": obj_id},

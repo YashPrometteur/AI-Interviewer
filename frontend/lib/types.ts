@@ -1,5 +1,3 @@
-// Phase 2: Shared TypeScript interfaces matching backend models and Pydantic schemas.
-
 export interface Candidate {
   id: string;
   name: string;
@@ -21,6 +19,32 @@ export interface Question {
   mouth_amplitude_track?: number[] | null;
   interviewer_photo_url?: string | null;
   mock?: boolean;
+}
+
+export interface SessionQuestionItem {
+  id: string;
+  session_id: string;
+  text: string;
+  skill_tag: string;
+  difficulty: 'easy' | 'medium' | 'hard' | string;
+  order_index: number;
+  is_followup?: boolean;
+  parent_question_id?: string | null;
+  is_answered: boolean;
+  score?: number | null;
+  answer_text?: string | null;
+  audio_url?: string | null;
+  avatar_video_url?: string | null;
+  mouth_amplitude_track?: number[] | null;
+  interviewer_photo_url?: string | null;
+  mock?: boolean;
+}
+
+export interface SessionQuestionsListResponse {
+  session_id: string;
+  total_questions: number;
+  answered_count: number;
+  questions: SessionQuestionItem[];
 }
 
 export interface NextQuestionResponse {
@@ -149,6 +173,10 @@ export interface SessionCreateResponse {
   answer_capture_type?: 'text' | 'video';
   session_deadline?: string | null;
   interviewer_photo_url?: string | null;
+  position?: string;
+  email_sent?: boolean;
+  email_subject?: string | null;
+  email_body?: string | null;
   mock?: boolean;
 }
 

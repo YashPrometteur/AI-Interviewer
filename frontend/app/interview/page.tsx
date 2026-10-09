@@ -5,6 +5,7 @@ import { Navbar } from '../../components/Navbar';
 import { Card } from '../../components/Card';
 import { Button } from '../../components/Button';
 import { InterviewRoom } from '../../features/interview/InterviewRoom';
+import { PreFlightCheck } from '../../features/interview/PreFlightCheck';
 import { api } from '../../lib/api';
 import { SessionListItem } from '../../lib/types';
 
@@ -15,21 +16,34 @@ function InterviewContent() {
   const [inputSessionId, setInputSessionId] = useState('');
   const [activeSessionId, setActiveSessionId] = useState<string | null>(querySessionId);
   const [availableSessions, setAvailableSessions] = useState<SessionListItem[]>([]);
+  const [hasPassedPreFlight, setHasPassedPreFlight] = useState<boolean>(false);
+
+  const matchedSession = availableSessions.find((s) => s.id === activeSessionId);
 
   useEffect(() => {
     if (querySessionId) {
       setActiveSessionId(querySessionId);
-    } else {
-      // Load recent sessions to help user jump into an interview quickly
-      api.listSessions().then((list) => {
-        setAvailableSessions(list.filter((s) => s.status !== 'completed'));
-      }).catch(() => {});
     }
+    // Load recent sessions to help user jump into an interview quickly
+    api.listSessions().then((list) => {
+      setAvailableSessions(list.filter((s) => s.status !== 'completed'));
+    }).catch(() => {});
   }, [querySessionId]);
 
   if (activeSessionId) {
+    if (!hasPassedPreFlight) {
+      return (
+        <PreFlightCheck
+          candidateName={matchedSession?.candidate_name || 'Candidate'}
+          interviewTitle="Technical Screen & Competency Assessment"
+          onProceed={() => setHasPassedPreFlight(true)}
+        />
+
+      );
+    }
     return <InterviewRoom sessionId={activeSessionId} />;
   }
+
 
   return (
     <div style={{ maxWidth: '650px', margin: '3rem auto', padding: '0 1rem' }}>

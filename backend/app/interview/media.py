@@ -149,47 +149,82 @@ def get_technical_initial_prompt(skill_tag: Optional[str] = None, question_text:
     skill_specific = []
     if skill_tag:
         st_lower = skill_tag.lower()
-        if "sql" in st_lower or "database" in st_lower or "postgres" in st_lower:
+        if "sql" in st_lower or "database" in st_lower or "postgres" in st_lower or "mysql" in st_lower or "mongo" in st_lower:
             skill_specific = [
-                "PostgreSQL", "SQL", "JOIN", "CTE", "index", "B-Tree", "GIN", "ACID", "deadlock",
-                "EXPLAIN ANALYZE", "sharding", "replication", "WAL", "connection pooling"
+                "PostgreSQL", "MySQL", "MongoDB", "Redis", "SQL", "JOIN", "CTE", "index", "B-Tree", "GIN", "ACID", "deadlock",
+                "EXPLAIN ANALYZE", "sharding", "replication", "WAL", "connection pooling", "foreign key", "normalization"
             ]
-        elif "fastapi" in st_lower or "python" in st_lower:
+        elif "fastapi" in st_lower or "python" in st_lower or "django" in st_lower or "flask" in st_lower:
             skill_specific = [
                 "FastAPI", "Python", "async def", "await", "pydantic", "BaseModel", "HTTPException",
                 "asyncio", "Uvicorn", "event loop", "GIL", "tuples", "lists", "mutable", "immutable",
-                "hashable", "dict", "context manager", "generator", "yield"
+                "hashable", "dict", "context manager", "generator", "yield", "SQLAlchemy", "Celery", "pytest"
             ]
-        elif "ai" in st_lower or "vision" in st_lower or "ml" in st_lower or "generative" in st_lower or "gpt" in st_lower:
+        elif "react" in st_lower or "frontend" in st_lower or "typescript" in st_lower or "javascript" in st_lower or "next" in st_lower or "web" in st_lower:
+            skill_specific = [
+                "React", "TypeScript", "Next.js", "JavaScript", "JSX", "TSX", "useState", "useEffect", "useMemo",
+                "useCallback", "useRef", "Redux", "Zustand", "Tailwind", "CSS", "DOM", "props", "state", "virtual DOM",
+                "SSR", "SSG", "hydration", "bundle size", "Webpack", "Vite", "GraphQL", "REST API"
+            ]
+        elif "java" in st_lower or "spring" in st_lower or "hibernate" in st_lower or "jvm" in st_lower:
+            skill_specific = [
+                "Java", "Spring Boot", "Hibernate", "JPA", "JVM", "garbage collection", "multithreading", "concurrency",
+                "Maven", "Gradle", "JUnit", "microservices", "Dependency Injection", "Autowired", "REST Controller"
+            ]
+        elif "c#" in st_lower or ".net" in st_lower or "dotnet" in st_lower or "asp.net" in st_lower:
+            skill_specific = [
+                "C#", ".NET", "ASP.NET Core", "Entity Framework", "LINQ", "async/await", "CLR", "garbage collector",
+                "dependency injection", "middleware", "NuGet", "Web API", "microservices"
+            ]
+        elif "go" in st_lower or "golang" in st_lower:
+            skill_specific = [
+                "Golang", "Go", "goroutines", "channels", "mutex", "select", "Gin", "Gorm", "pointers", "interfaces",
+                "concurrency", "garbage collection", "profiling", "microservices"
+            ]
+        elif "ai" in st_lower or "vision" in st_lower or "ml" in st_lower or "generative" in st_lower or "gpt" in st_lower or "llm" in st_lower:
             skill_specific = [
                 "GPT", "LLM", "PagedAttention", "vLLM", "TensorRT-LLM", "quantization", "INT8", "FP16", "FP32",
-                "distillation", "speculative decoding", "dynamic batching", "Redis", "embeddings", "vector search"
+                "distillation", "speculative decoding", "dynamic batching", "Redis", "embeddings", "vector search",
+                "RAG", "fine-tuning", "LoRA", "Hugging Face", "PyTorch", "transformers"
             ]
-        elif "docker" in st_lower or "devops" in st_lower or "k8s" in st_lower:
+        elif "docker" in st_lower or "devops" in st_lower or "k8s" in st_lower or "kubernetes" in st_lower or "cloud" in st_lower or "aws" in st_lower or "azure" in st_lower:
             skill_specific = [
-                "Docker", "Dockerfile", "multi-stage build", "Kubernetes", "Pod", "Deployment", "Service",
-                "Ingress", "Helm", "ConfigMap", "Secret", "volume mount", "entrypoint", "CI/CD"
+                "Docker", "Dockerfile", "multi-stage build", "Kubernetes", "Pod", "Deployment", "Service", "kubectl",
+                "Ingress", "Helm", "ConfigMap", "Secret", "volume mount", "entrypoint", "CI/CD", "AWS", "S3", "EC2", "Lambda", "Terraform"
             ]
-        elif "data" in st_lower or "pandas" in st_lower or "analytics" in st_lower:
+        elif "system" in st_lower or "architecture" in st_lower or "distributed" in st_lower:
+            skill_specific = [
+                "System Design", "microservices", "load balancer", "reverse proxy", "Nginx", "caching", "Redis",
+                "Kafka", "RabbitMQ", "event-driven", "latency", "throughput", "sharding", "consistency", "CAP theorem"
+            ]
+        elif "data" in st_lower or "pandas" in st_lower or "analytics" in st_lower or "spark" in st_lower:
             skill_specific = [
                 "pandas", "DataFrame", "Series", "numpy", "groupby", "merge", "concat",
-                "ETL", "parquet", "vectorized", "data pipeline"
+                "ETL", "parquet", "vectorized", "data pipeline", "Apache Spark", "PySpark"
             ]
         else:
-            skill_specific = [skill_tag, "API", "microservices", "latency", "throughput", "caching", "Redis"]
+            skill_specific = [skill_tag, "API", "microservices", "latency", "throughput", "caching", "Redis", "architecture"]
+
+    # Dynamically extract technical terms / acronyms from question text if present
+    if question_text:
+        import re
+        extracted_terms = re.findall(r"\b[A-Z][a-zA-Z0-9_\-\.]{2,}\b", question_text)
+        for term in extracted_terms[:6]:
+            if term not in skill_specific:
+                skill_specific.insert(0, term)
 
     # Fallback core terms
     if not skill_specific:
-        skill_specific = ["Python", "FastAPI", "Redis", "PostgreSQL", "Docker", "asyncio", "pydantic"]
+        skill_specific = ["Python", "FastAPI", "React", "TypeScript", "Redis", "PostgreSQL", "Docker", "asyncio", "pydantic"]
 
-    keywords_str = ", ".join(skill_specific[:15])
+    keywords_str = ", ".join(skill_specific[:18])
     
     if question_text:
         # Truncate question if long to fit comfortably in Whisper's ~224 token buffer
         q_clean = question_text.strip()
         if len(q_clean) > 130:
             q_clean = q_clean[:127] + "..."
-        return f"Software engineer interview. Question: {q_clean} Keywords: {keywords_str}."
+        return f"Software engineer technical interview. Question: {q_clean} Key technical vocabulary: {keywords_str}."
     else:
         return f"Software engineering technical interview discussion covering: {keywords_str}."
 
@@ -221,6 +256,7 @@ def repair_transcript_phonetics(raw_text: str, question_text: Optional[str] = No
     phonetic_map = {
         r'\bpaste attention\b': 'PagedAttention',
         r'\bbread is\b': 'Redis',
+        r'\bread is\b': 'Redis',
         r'\bT-bounds\b': 'debounce',
         r'\bT-bound\b': 'debounce',
         r'\bF-32 to I-8\b': 'FP32 to INT8',
@@ -234,6 +270,24 @@ def repair_transcript_phonetics(raw_text: str, question_text: Optional[str] = No
         r'\btenser RTLLM\b': 'TensorRT-LLM',
         r'\btenser RT-LLM\b': 'TensorRT-LLM',
         r'\btensor RTLLM\b': 'TensorRT-LLM',
+        r'\buse effect\b': 'useEffect',
+        r'\buse state\b': 'useState',
+        r'\buse memo\b': 'useMemo',
+        r'\buse call back\b': 'useCallback',
+        r'\buse callback\b': 'useCallback',
+        r'\buse ref\b': 'useRef',
+        r'\bnext js\b': 'Next.js',
+        r'\bnext JS\b': 'Next.js',
+        r'\bgraph QL\b': 'GraphQL',
+        r'\bgraph ql\b': 'GraphQL',
+        r'\bcube cuddle\b': 'kubectl',
+        r'\bcube CTL\b': 'kubectl',
+        r'\bcube ctl\b': 'kubectl',
+        r'\bengine X\b': 'Nginx',
+        r'\bengine x\b': 'Nginx',
+        r'\bengine-x\b': 'Nginx',
+        r'\bprop drilling\b': 'prop drilling',
+        r'\bprops drilling\b': 'prop drilling',
     }
     import re
     for pattern, repl in phonetic_map.items():
@@ -304,8 +358,7 @@ def preprocess_audio_for_transcription(input_path: Path) -> Path:
     """Preprocesses input audio/video file using FFmpeg for optimal Whisper accuracy:
     1. Extracts audio track and converts to 16kHz mono 16-bit PCM WAV.
     2. Applies bandpass filter (80Hz to 8500Hz) to cut mic rumble while preserving high-frequency speech sibilants.
-    3. Trims leading and trailing silence gaps (>0.4s below -35dB) using silenceremove filter.
-    4. Normalizes audio volume using standard loudnorm filter (I=-16, LRA=11, TP=-1.5).
+    3. Normalizes audio volume using standard loudnorm filter (I=-16, LRA=11, TP=-1.5) without destructive silence chopping.
     Falls back to original file if FFmpeg fails.
     """
     check_ffmpeg_available()
@@ -315,7 +368,7 @@ def preprocess_audio_for_transcription(input_path: Path) -> Path:
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
             "-vn",
-            "-af", "highpass=f=80,lowpass=f=8500,silenceremove=start_periods=1:start_threshold=-35dB:start_silence=0.1:stop_periods=-1:stop_threshold=-35dB:stop_silence=0.4,loudnorm=I=-16:LRA=11:TP=-1.5",
+            "-af", "highpass=f=80,lowpass=f=8500,loudnorm=I=-16:LRA=11:TP=-1.5",
             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             str(preprocessed_path)
         ]
@@ -424,10 +477,7 @@ def transcribe_recording(
                 )
             text = (transcript_obj.text or "").strip()
             if len(text) < 2:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Recorded answer transcription was empty or inaudible. Please re-record a clear technical answer."
-                )
+                text = "[No audible response detected in recording]"
             return {"text": text, "confidence": 0.95, "transcription_mode": "real"}
         except HTTPException:
             raise
@@ -460,10 +510,7 @@ def transcribe_recording(
 
         raw_text = sanitize_transcript(result.get("text", "").strip())
         if not raw_text or len(raw_text) < 2:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Recorded answer transcription was empty or inaudible. Please re-record a clear technical answer."
-            )
+            raw_text = "[No audible response detected in recording]"
 
         # Compute approximate average confidence from segments if available
         confidence = None

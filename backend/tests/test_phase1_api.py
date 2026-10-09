@@ -90,8 +90,8 @@ def test_edge_case_short_jd():
     assert response.status_code == 400
     assert "Job description is too short" in response.json()["detail"]
 
-def test_edge_case_empty_answer():
-    """Submitting empty or whitespace-only answer must be rejected with 400."""
+def test_edge_case_empty_or_skip_answer():
+    """Submitting empty, whitespace, or 'I don't remember' answer is accepted with 200 and evaluated cleanly."""
     create_resp = client.post(
         "/api/sessions",
         data={
@@ -112,8 +112,8 @@ def test_edge_case_empty_answer():
         f"/api/sessions/{session_id}/answer",
         json={"question_id": q_id, "answer_text": "   "}
     )
-    assert ans_resp.status_code == 400
-    assert "cannot be empty" in ans_resp.json()["detail"]
+    assert ans_resp.status_code == 200
+    assert "score" in ans_resp.json()
 
 def test_full_session_flow():
     """Tests complete end-to-end interview turn flow and report generation."""

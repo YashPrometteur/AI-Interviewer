@@ -61,15 +61,15 @@ def analyze_frame(frame_bytes: bytes) -> Dict[str, Any]:
         phone_count = 0
         try:
             yolo = get_yolo_model()
-            results = yolo(img, verbose=False, conf=0.40)
+            results = yolo(img, verbose=False, conf=0.30)
             if results and len(results) > 0 and results[0].boxes is not None:
                 for b in results[0].boxes:
                     cls_id = int(b.cls[0])
                     conf_val = float(b.conf[0])
-                    if cls_id == 0 and conf_val >= 0.50:
+                    if cls_id == 0 and conf_val >= 0.45:
                         coords = [float(c) for c in b.xyxy[0]]
                         person_boxes.append(coords)
-                    elif cls_id == 67 and conf_val >= 0.40:  # COCO 67 = 'cell phone'
+                    elif cls_id == 67 and conf_val >= 0.30:  # COCO 67 = 'cell phone'
                         phone_detected = True
                         phone_count += 1
                 person_count = len(person_boxes)

@@ -1,4 +1,3 @@
-// Phase 1: Root layout configuration with global metadata, fonts, and theme providers.
 import React from 'react';
 
 export const metadata = {

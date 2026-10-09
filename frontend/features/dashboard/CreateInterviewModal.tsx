@@ -18,6 +18,7 @@ export const CreateInterviewModal: React.FC<CreateInterviewModalProps> = ({
 }) => {
   const [candidateName, setCandidateName] = useState('');
   const [candidateEmail, setCandidateEmail] = useState('');
+  const [position, setPosition] = useState('');
   const [jdText, setJdText] = useState('');
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [interviewerPhoto, setInterviewerPhoto] = useState<File | null>(null);
@@ -31,6 +32,7 @@ export const CreateInterviewModal: React.FC<CreateInterviewModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [createdSession, setCreatedSession] = useState<SessionCreateResponse | null>(null);
   const [copied, setCopied] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -51,6 +53,10 @@ export const CreateInterviewModal: React.FC<CreateInterviewModalProps> = ({
       setErrorMessage('Please provide candidate name and email.');
       return;
     }
+    if (!position.trim()) {
+      setErrorMessage('Please provide the Position / Role applied for.');
+      return;
+    }
     if (!jdText.trim() || jdText.trim().length < 50) {
       setErrorMessage('Please provide a complete Job Description (minimum 50 characters).');
       return;
@@ -65,6 +71,7 @@ export const CreateInterviewModal: React.FC<CreateInterviewModalProps> = ({
       const formData = new FormData();
       formData.append('candidate_name', candidateName.trim());
       formData.append('candidate_email', candidateEmail.trim());
+      formData.append('position', position.trim());
       formData.append('jd_text', jdText.trim());
       formData.append('resume_file', resumeFile);
       formData.append('interview_mode', interviewMode);
@@ -86,59 +93,169 @@ export const CreateInterviewModal: React.FC<CreateInterviewModalProps> = ({
 
   const handleCopyLink = () => {
     if (!createdSession) return;
-    const fullUrl = `${window.location.origin}/interview?session_id=${createdSession.session_id}`;
+    const fullUrl = typeof window !== 'undefined'
+      ? `${window.location.origin}/interview?session_id=${createdSession.session_id}`
+      : createdSession.session_url;
     navigator.clipboard.writeText(fullUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 3000);
   };
 
+  const handleCopyEmail = () => {
+    if (!createdSession || !createdSession.email_body) return;
+    navigator.clipboard.writeText(createdSession.email_body);
+    setEmailCopied(true);
+    setTimeout(() => setEmailCopied(false), 3000);
+  };
+
   const handleResetAndClose = () => {
     setCandidateName('');
     setCandidateEmail('');
+    setPosition('');
     setJdText('');
     setResumeFile(null);
     setCreatedSession(null);
     setErrorMessage(null);
     setCopied(false);
+    setEmailCopied(false);
     onClose();
   };
 
   return (
     <Modal isOpen={isOpen} onClose={handleResetAndClose} title="Create AI Interview Session">
       {createdSession ? (
-        <div style={{ textAlign: 'center', padding: '1rem 0' }}>
-          <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎉</div>
-          <h3 style={{ fontSize: '1.3rem', fontWeight: 700, color: '#0f172a', marginBottom: '0.5rem' }}>
-            Interview Session Generated!
-          </h3>
-          <p style={{ color: '#64748b', fontSize: '0.95rem', marginBottom: '1.5rem' }}>
-            {createdSession.total_questions} tailored interview questions have been generated for{' '}
-            <strong>{createdSession.candidate_name}</strong>.
-          </p>
+        <div style={{ padding: '0.5rem 0' }}>
+          <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+            <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🎉</div>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 700, color: '#0f172a', margin: '0 0 0.35rem 0' }}>
+              Interview Session Generated!
+            </h3>
+            <p style={{ color: '#64748b', fontSize: '0.9rem', margin: 0 }}>
+              {createdSession.total_questions} tailored questions generated for{' '}
+              <strong>{createdSession.candidate_name}</strong> ({createdSession.position || position || 'Candidate'}).
+            </p>
+          </div>
 
+          {/* Email Status Alert Banner */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            backgroundColor: '#f0fdf4',
+            border: '1px solid #bbf7d0',
+            borderRadius: '8px',
+            padding: '0.65rem 0.9rem',
+            marginBottom: '1rem',
+            fontSize: '0.85rem',
+            color: '#166534',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '1.1rem' }}>✉️</span>
+              <span>
+                Invitation email prepared for <strong>{candidateEmail}</strong> from <strong>Aditi Kumar (HR Head)</strong>
+              </span>
+            </div>
+            <span style={{
+              fontSize: '0.75rem',
+              fontWeight: 700,
+              backgroundColor: '#dcfce7',
+              color: '#15803d',
+              padding: '0.2rem 0.5rem',
+              borderRadius: '9999px',
+            }}>
+              Prometteur Solutions
+            </span>
+          </div>
+
+          {/* Direct Link Box */}
           <div style={{
             backgroundColor: '#f8fafc',
             border: '1px solid #e2e8f0',
             borderRadius: '8px',
-            padding: '1rem',
-            marginBottom: '1.5rem',
+            padding: '0.85rem 1rem',
+            marginBottom: '1rem',
             wordBreak: 'break-all',
-            fontSize: '0.9rem',
+            fontSize: '0.875rem',
             color: '#0f172a',
-            textAlign: 'left',
           }}>
-            <strong>Candidate Invite Link:</strong>
-            <div style={{ marginTop: '0.5rem', color: '#2563eb', fontFamily: 'monospace' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+              <strong>Candidate Direct Test Link:</strong>
+              <button
+                type="button"
+                onClick={handleCopyLink}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#2563eb',
+                  fontWeight: 600,
+                  fontSize: '0.8rem',
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                {copied ? '✅ Copied' : '📋 Copy URL'}
+              </button>
+            </div>
+            <div style={{ color: '#2563eb', fontFamily: 'monospace', fontSize: '0.85rem' }}>
               {typeof window !== 'undefined' ? `${window.location.origin}/interview?session_id=${createdSession.session_id}` : createdSession.session_url}
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-            <Button variant="primary" onClick={handleCopyLink}>
-              {copied ? '✅ Link Copied!' : '📋 Copy Candidate Link'}
-            </Button>
+          {/* Email Body Preview & Copy */}
+          {createdSession.email_body && (
+            <div style={{ marginBottom: '1.25rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#334155' }}>
+                  📧 Invitation Email Body (Prometteur Solutions)
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCopyEmail}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.3rem',
+                    padding: '0.25rem 0.6rem',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    backgroundColor: emailCopied ? '#dcfce7' : '#f1f5f9',
+                    color: emailCopied ? '#15803d' : '#334155',
+                    border: `1px solid ${emailCopied ? '#86efac' : '#cbd5e1'}`,
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {emailCopied ? '✅ Email Body Copied!' : '📋 Copy Email Body'}
+                </button>
+              </div>
+
+              <textarea
+                readOnly
+                rows={7}
+                value={createdSession.email_body}
+                style={{
+                  width: '100%',
+                  padding: '0.65rem',
+                  borderRadius: '6px',
+                  border: '1px solid #cbd5e1',
+                  backgroundColor: '#f8fafc',
+                  color: '#334155',
+                  fontSize: '0.8rem',
+                  fontFamily: 'monospace',
+                  lineHeight: 1.45,
+                  boxSizing: 'border-box',
+                  resize: 'vertical',
+                }}
+              />
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
             <Button variant="secondary" onClick={handleResetAndClose}>
-              Done
+              Close
+            </Button>
+            <Button variant="primary" onClick={handleCopyLink}>
+              {copied ? '✅ Link Copied!' : '📋 Copy Interview Link'}
             </Button>
           </div>
         </div>
@@ -199,6 +316,28 @@ export const CreateInterviewModal: React.FC<CreateInterviewModalProps> = ({
                 }}
               />
             </div>
+          </div>
+
+          {/* Position / Role Field (Required before JD) */}
+          <div style={{ marginBottom: '1rem' }}>
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#334155', marginBottom: '0.4rem' }}>
+              Position / Role Applied For *
+            </label>
+            <input
+              type="text"
+              required
+              value={position}
+              onChange={(e) => setPosition(e.target.value)}
+              placeholder="e.g. Full Stack Python Developer, Senior Frontend Engineer"
+              style={{
+                width: '100%',
+                padding: '0.625rem',
+                borderRadius: '6px',
+                border: '1px solid #cbd5e1',
+                fontSize: '0.9rem',
+                boxSizing: 'border-box',
+              }}
+            />
           </div>
 
           <div style={{ marginBottom: '1rem' }}>
